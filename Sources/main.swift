@@ -528,6 +528,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
+        reloadMCPStatus() // the monitor may have finished after launch; never require a manual refresh
 
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read per
         // session) to catch a checkout made while a session sat idle.
@@ -574,12 +575,30 @@ final class StatusController: NSObject, NSMenuDelegate {
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
             }
             menu.addItem(.separator())
-        } else if codexDesktopRunning() {
-            // No live session to pin, but the desktop app is up — give a way to jump back in.
+        } else {
+            // Empty should be explanatory, not look like a settings-only app. Hooks are loaded when a
+            // Codex task starts, so a task that predates installation cannot emit retroactive events.
             menu.addItem(header("Sessions"))
-            let open = NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "")
-            open.target = self
-            menu.addItem(open)
+            menu.addItem(disabledItem("No tracked tasks yet"))
+            menu.addItem(disabledItem("Codex UI is supported · CLI is optional"))
+            menu.addItem(disabledItem("Restart Codex, then start a new task"))
+
+            let preview = NSMenuItem(title: "Status preview", action: nil, keyEquivalent: "")
+            let previewMenu = NSMenu()
+            for title in [
+                "◌  Thinking / working",
+                "●  Using tool or MCP",
+                "!  Waiting for approval",
+                "✓  Done / idle",
+            ] { previewMenu.addItem(disabledItem(title)) }
+            preview.submenu = previewMenu
+            menu.addItem(preview)
+
+            if codexDesktopRunning() {
+                let open = NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "")
+                open.target = self
+                menu.addItem(open)
+            }
             menu.addItem(.separator())
         }
 
@@ -666,6 +685,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         it.isEnabled = false
         return it
+    }
+
+    func disabledItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
     }
 
     func toggleRow(title: String, qualifier: String? = nil, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {

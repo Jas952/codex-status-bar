@@ -31,10 +31,20 @@ The menu lists configured MCP servers and reports:
 Live health comes from a local `codex app-server` sidecar. The persisted inventory is deliberately
 redacted: it never stores transports, URLs, headers, environment values, credentials, or tool arguments.
 
+## Codex desktop app and CLI
+
+Codex desktop tasks are supported directly; you do not need to work in a terminal. Hooks are loaded
+when a task starts, so after the first Codex Status Bar installation restart Codex and create a new
+task. A task that was already open before installation cannot replay earlier hook events.
+
+The standalone Codex CLI is optional for session tracking. It is currently used by the MCP health
+sidecar (`codex app-server`), so without a `codex` executable the app still shows desktop task state
+but cannot probe live MCP server health.
+
 ## Requirements
 
 - macOS 12 or newer;
-- Codex CLI with stable hooks support (tested with `codex-cli 0.144.2`);
+- Codex desktop app or Codex CLI with stable hooks support (tested with `codex-cli 0.144.2`);
 - Node.js;
 - Swift toolchain for source builds.
 
@@ -53,8 +63,9 @@ The universal app bundle is written to `build/CodexStatusBar.app`. To build a DM
 Without a matching Developer ID certificate, the script creates an ad-hoc signed development build.
 
 On first launch the app merges its user-level hooks into `~/.codex/hooks.json` and saves a one-time
-backup at `~/.codex/hooks.json.bak-codex-status-bar`. Open `/hooks` in a new Codex CLI session and
-review/trust the definitions before testing.
+backup at `~/.codex/hooks.json.bak-codex-status-bar`. Review/trust the new hook definitions when Codex
+asks. Then restart Codex and begin a new task so the desktop app loads them. In the CLI, `/hooks`
+shows the same definitions and trust state.
 
 ## Install as a Codex plugin
 
