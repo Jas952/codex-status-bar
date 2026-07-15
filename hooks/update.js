@@ -74,6 +74,8 @@ process.stdin.on("end", () => {
     const previous = readJSON(statePath);
     const ts = now();
     const turnId = input.turn_id || previous.turnId || "";
+    const entrypoint = process.env.CODEX_ENTRYPOINT || previous.entrypoint ||
+      (process.env.TERM_PROGRAM ? "cli" : "codex-app");
     const state = {
       state: previous.state || "idle",
       label: previous.label || "",
@@ -90,10 +92,9 @@ process.stdin.on("end", () => {
       model: input.model || previous.model || "",
       permissionMode: input.permission_mode || previous.permissionMode || "",
       transcript: input.transcript_path || previous.transcript || "",
-      entrypoint: process.env.CODEX_ENTRYPOINT || previous.entrypoint ||
-        (process.env.TERM_PROGRAM ? "cli" : "codex-app"),
+      entrypoint,
       term_program: process.env.TERM_PROGRAM || previous.term_program || "",
-      pid: previous.pid || process.ppid,
+      pid: previous.pid || (entrypoint == "cli" ? process.ppid : 0),
       started: true,
       startedAt: previous.startedAt || 0,
       ts,

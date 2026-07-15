@@ -1156,8 +1156,17 @@ final class StatusController: NSObject, NSMenuDelegate {
             // gone (closed/crashed terminal, quit app), so an idle-but-open session stays and the icon
             // holds. Pre-upgrade files have no pid (0) — fall back to the old idle+age prune so they
             // can't linger forever. This is also what keeps state.d self-cleaning (no growing cache).
-            let dead = s.pid > 0 ? !pidAlive(s.pid)
-                                 : (s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge)
+            let dead: Bool
+            if s.entrypoint == "codex-app" {
+                // Desktop hooks run in short-lived child processes, so their PPID cannot represent
+                // task liveness. Keep UI sessions while Codex itself is running; idle-age filtering
+                // still hides old rows without deleting their state.
+                dead = !codexDesktopRunning()
+            } else if s.pid > 0 {
+                dead = !pidAlive(s.pid)
+            } else {
+                dead = s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge
+            }
             if dead {
                 try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
                 sessions[id] = nil; fileMTimes[id + ".json"] = nil; prevState[id] = nil; sessionWord[id] = nil

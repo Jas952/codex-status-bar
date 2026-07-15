@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — Codex UI liveness fix
+
+- Keep Codex desktop sessions alive using the desktop app process rather than the short-lived hook runner PID.
+- Add a regression test for desktop hook state and clearer empty-state diagnostics.
+- Refresh MCP inventory whenever the menu opens.
+
 ## 0.1.0 — Codex fork
 
 - Forked the AppKit status bar and per-session aggregation design for Codex.

@@ -25,13 +25,16 @@ process.stdin.on("end", () => {
   try { input = JSON.parse(raw || "{}"); } catch {}
   const id = safeId(input.session_id);
   const cwd = input.cwd || process.cwd();
+  const entrypoint = process.env.CODEX_ENTRYPOINT || (process.env.TERM_PROGRAM ? "cli" : "codex-app");
   writeAtomic(path.join(stateDir, `${id}.json`), {
     state: "idle", label: "", tool: "", toolKind: "", mcpServer: "", mcpTool: "",
     activeTools: {}, activeAgents: {}, project: cwd ? path.basename(cwd) : "", cwd,
     sessionId: input.session_id || id, turnId: input.turn_id || "", model: input.model || "",
     permissionMode: input.permission_mode || "", transcript: input.transcript_path || "",
-    entrypoint: process.env.TERM_PROGRAM ? "cli" : "codex-app",
-    term_program: process.env.TERM_PROGRAM || "", pid: process.ppid, started: false,
+    entrypoint,
+    // A desktop hook is launched through a short-lived runner; its PPID is not the Codex app and
+    // dies as soon as the hook returns. Desktop liveness is therefore owned by the app process.
+    term_program: process.env.TERM_PROGRAM || "", pid: entrypoint == "cli" ? process.ppid : 0, started: false,
     startedAt: 0, ts: Math.floor(Date.now() / 1000), lastEvent: "SessionStart",
   });
   try {
