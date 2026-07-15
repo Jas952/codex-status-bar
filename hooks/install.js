@@ -1,75 +1,64 @@
 #!/usr/bin/env node
-// Installs the status-bar hooks into ~/.claude/settings.json (merging, never
-// clobbering existing hooks) and copies update.js to ~/.claude/statusbar/.
-// Re-runnable: existing status-bar hooks are stripped before re-adding.
+// Install user-level Codex hooks without replacing unrelated hook definitions.
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const cp = require("child_process");
 
 const home = os.homedir();
-const sbDir = path.join(home, ".claude", "statusbar");
-const MARKER = sbDir; // every hook command we add points inside this dir
-const updateDest = path.join(sbDir, "update.js");
-const lifecycleDest = path.join(sbDir, "lifecycle.js");
-const settingsPath = path.join(home, ".claude", "settings.json");
+const root = path.join(home, ".codex", "statusbar");
+const hooksPath = path.join(home, ".codex", "hooks.json");
+const marker = root;
 const node = process.execPath;
+const updateDest = path.join(root, "update.js");
+const lifecycleDest = path.join(root, "lifecycle.js");
+const inventoryDest = path.join(root, "mcp-inventory.js");
+const monitorDest = path.join(root, "mcp-monitor.js");
 
-// Retire the old 0.0.2 background watcher LaunchAgent on upgrade (0.0.3+ self-quits).
-const OLD_AGENT_LABEL = "com.local.claudestatusbar.watcher";
-const oldAgentPlist = path.join(home, "Library", "LaunchAgents", OLD_AGENT_LABEL + ".plist");
-try { cp.execSync(`launchctl bootout gui/${process.getuid()}/${OLD_AGENT_LABEL}`, { stdio: "ignore" }); } catch {}
-if (fs.existsSync(oldAgentPlist)) { fs.rmSync(oldAgentPlist); console.log("Removed old desktop watcher LaunchAgent."); }
-
-fs.mkdirSync(sbDir, { recursive: true });
-fs.rmSync(path.join(sbDir, "watcher.sh"), { force: true });
-// Retire pre-multi-session artifacts (single global state + empty liveness markers).
-fs.rmSync(path.join(sbDir, "state.json"), { force: true });
-fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
+fs.mkdirSync(root, { recursive: true });
 fs.copyFileSync(path.join(__dirname, "update.js"), updateDest);
 fs.copyFileSync(path.join(__dirname, "lifecycle.js"), lifecycleDest);
+fs.copyFileSync(path.join(__dirname, "mcp-inventory.js"), inventoryDest);
+fs.copyFileSync(path.join(__dirname, "mcp-monitor.js"), monitorDest);
 
-const cmd = (evt) => `${node} ${updateDest} ${evt}`;
-const life = (evt) => `${node} ${lifecycleDest} ${evt}`;
-
-let settings = {};
-if (fs.existsSync(settingsPath)) {
-  settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-  const bak = settingsPath + ".bak-statusbar";
-  if (!fs.existsSync(bak)) fs.copyFileSync(settingsPath, bak);
+let config = { hooks: {} };
+if (fs.existsSync(hooksPath)) {
+  config = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+  config.hooks = config.hooks || {};
+  const backup = `${hooksPath}.bak-codex-status-bar`;
+  if (!fs.existsSync(backup)) fs.copyFileSync(hooksPath, backup);
 }
-settings.hooks = settings.hooks || {};
 
-const stripOurs = (arr) =>
-  (arr || [])
-    .map((entry) => ({
-      ...entry,
-      hooks: (entry.hooks || []).filter((h) => !(h.command || "").includes(MARKER)),
-    }))
-    .filter((entry) => (entry.hooks || []).length > 0);
+function stripOurs(entries) {
+  return (entries || []).map((entry) => ({
+    ...entry,
+    hooks: (entry.hooks || []).filter((hook) => !(hook.command || "").includes(marker)),
+  })).filter((entry) => entry.hooks.length);
+}
 
-const addUnmatched = (evt, command) => {
-  settings.hooks[evt] = stripOurs(settings.hooks[evt]);
-  settings.hooks[evt].push({ hooks: [{ type: "command", command }] });
-};
-const addMatched = (evt, command) => {
-  settings.hooks[evt] = stripOurs(settings.hooks[evt]);
-  settings.hooks[evt].push({ matcher: "*", hooks: [{ type: "command", command }] });
-};
+function add(event, script, arg, matcher) {
+  config.hooks[event] = stripOurs(config.hooks[event]);
+  const entry = {
+    hooks: [{
+      type: "command",
+      command: `${JSON.stringify(node)} ${JSON.stringify(script)} ${arg}`,
+      timeout: 10,
+    }],
+  };
+  if (matcher) entry.matcher = matcher;
+  config.hooks[event].push(entry);
+}
 
-// Status hooks (drive the animation/label)
-addUnmatched("UserPromptSubmit", cmd("prompt"));
-addMatched("PreToolUse", cmd("pre"));
-addMatched("PostToolUse", cmd("post"));
-addUnmatched("Notification", cmd("notify"));
-addMatched("PermissionRequest", cmd("permreq"));
-addUnmatched("Stop", cmd("stop"));
-// Lifecycle hooks (launch the app on open; the app quits itself when no longer needed)
-addUnmatched("SessionStart", life("start"));
-addUnmatched("SessionEnd", life("end"));
+add("SessionStart", lifecycleDest, "start", "startup|resume|clear");
+add("UserPromptSubmit", updateDest, "prompt");
+add("PreToolUse", updateDest, "pre", "*");
+add("PostToolUse", updateDest, "post", "*");
+add("PermissionRequest", updateDest, "permission", "*");
+add("SubagentStart", updateDest, "agent-start", "*");
+add("SubagentStop", updateDest, "agent-stop", "*");
+add("Stop", updateDest, "stop");
 
-fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-console.log("Installed status-bar hooks into", settingsPath);
-console.log("Scripts:", updateDest, "and", lifecycleDest);
-console.log("Backup (first run only):", settingsPath + ".bak-statusbar");
+fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+fs.writeFileSync(hooksPath, `${JSON.stringify(config, null, 2)}\n`);
+console.log(`Installed Codex Status Bar hooks into ${hooksPath}`);
+console.log("Open /hooks in Codex and trust the new definitions before testing.");

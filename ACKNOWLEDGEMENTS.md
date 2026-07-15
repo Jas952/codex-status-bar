@@ -1,5 +1,8 @@
 # Acknowledgements
 
+Codex Status Bar is derived from Claude Status Bar by Mick Cesanek. The upstream contributors below
+designed and refined the multi-session AppKit foundation retained by this fork.
+
 Claude Status Bar's multi-session support grew out of several community contributions. Thank you to:
 
 - **[@BrennenRocks](https://github.com/BrennenRocks)**, [PR #13](https://github.com/m1ckc3s/claude-status-bar/pull/13): the per-session / multi-session implementation. Major contributions here.

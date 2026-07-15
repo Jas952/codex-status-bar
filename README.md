@@ -1,115 +1,104 @@
-<a href="https://github.com/m1ckc3s/claude-status-bar/releases/latest/download/ClaudeStatusBar.dmg"><img src="assets/download.png" alt="Download ClaudeStatusBar.dmg for macOS" width="220"></a>
-<br>
-**Signed and notarized by Apple**
-## Claude Status Bar
+# Codex Status Bar
 
-A tiny macOS menu bar app that shows **Claude Code's live status**: an animated Claude icon while it's thinking or running a tool, a yellow dot when it's awaiting your permission, and the elapsed time of the current turn. Lightweight, no window, no dock icon, no usage dashboards.
+A native macOS menu bar companion for local Codex work. It shows live turns, tools, approvals,
+subagents, Git branches, models, and MCP health without opening a dashboard.
 
-> Built so you can tab away during a long "thinking" stretch and still see, at a glance, whether Claude is working, waiting on you, or done.
+This project is a fork of [m1ckc3s/claude-status-bar](https://github.com/m1ckc3s/claude-status-bar).
+The original AppKit menu and atomic per-session state design are retained under the MIT license;
+the integration, branding, state reducer, plugin packaging, and MCP monitor have been adapted for Codex.
 
-<img width="600" height="479" alt="Screen Recording 2026-07-10 at 12 32 23 AM" src="https://github.com/user-attachments/assets/f5d77b7c-f41d-4276-b28f-e1cf655fd323" />
+## Statuses
 
----
+- **Thinking / working** — animated terminal pulse and optional elapsed timer.
+- **Using a tool** — Reading, Editing, Running command, Browsing, and other tool labels.
+- **Using MCP** — active server and tool, for example `github · search_issues`.
+- **Needs approval** — amber indicator when Codex is waiting for permission.
+- **Subagents** — active delegated agent count and state.
+- **Done / idle** — resting terminal glyph.
 
-## What it shows
+Multiple local sessions are aggregated. Approval takes priority over working, which takes priority
+over idle. The dropdown keeps each session separate and includes its project, branch, surface,
+model, active MCP tool, and subagent count.
 
-- **Thinking / working** — the icon animates, with a live `1m 1s` timer.
-- **Running a tool** — a short label (`Editing`, `Reading`, `Running command`, `Using tool`, …).
-- **Awaiting permission** — a paused yellow dot, in both the CLI and the Desktop app.
-- **Idle / done** — rests on the Claude logo.
+## MCP panel
 
-Everything is controlled from the menu:
+The menu lists configured MCP servers and reports:
 
-- **Show timer:** toggle the elapsed `1m 1s` clock.
-- **Thinking words:** rotate a playful verb (`Manifesting…`, `Percolating…`) in place of `Thinking…`, like Claude Code (on by default).
-- **Animation style:**
-  - **Claude Spark**, the web/chat "morph" spark
-  - **Claude Code**, the terminal glyph spinner
-  - **Crab Walking**, a pixel-art Clawd crab that scuttles while Claude works
-- **Icon color:** **Orange** or **System** (adaptive black/white). All three styles follow this setting: in System mode Crab Walking renders as a shaded monochrome silhouette that matches the menu bar.
-- **Version and update:** the menu shows your current version, with a one-click "Update available" when a newer release exists.
+- starting, ready, failed, cancelled, disabled, or authentication required;
+- the number of tools advertised by each ready server;
+- the MCP server/tool currently used by a Codex turn.
 
-**Multi-session support.** When several Claude Code sessions run at once (multiple terminals, or a terminal plus the desktop app), the menu bar surfaces the highest-priority one: a session awaiting your permission is never hidden behind one that's thinking. The dropdown lists every live session. Precise per-tab focus is in progress: **[issue #19 →](https://github.com/m1ckc3s/claude-status-bar/issues/19)**.
-
-## Where it works
-
-| Surface | Tracked? |
-|---|---|
-| Claude Code CLI (terminal) | ✅ |
-| Claude Code Desktop — **Code** tab | ✅ |
-| Cursor (Claude Code extension) | ✅ |
-| Claude Desktop — **Chat/Cowork** tab | ❌ |
-
-## Install
-
-### Option A — DMG (recommended) 
-
-Signed and notarized.
-
-1. Download the latest `ClaudeStatusBar.dmg` from [Releases](../../releases).
-2. Open it and drag **Claude Status Bar** into Applications.
-3. Launch it once. On first launch it wires up the Claude Code hooks for you automatically.
-4. Start a new Claude Code session, the icon appears whenever Claude Code is running.
-
-### Updating
-
-> [!IMPORTANT]
-> **Updated mid-session?** Sessions already open won't show up until they do something (send a prompt) or you start a new `claude` session.
-
-Download the latest DMG and drag it into Applications (choose **Replace**). That's it: it refreshes its own hooks the next time it starts up (on a version change it re-runs its installer automatically), so there's nothing to run by hand. Your next Claude Code session picks them up.
+Live health comes from a local `codex app-server` sidecar. The persisted inventory is deliberately
+redacted: it never stores transports, URLs, headers, environment values, credentials, or tool arguments.
 
 ## Requirements
 
-- macOS 12+
-- [Claude Code](https://claude.com/claude-code) (CLI or the Desktop app)
-- Node.js
+- macOS 12 or newer;
+- Codex CLI with stable hooks support (tested with `codex-cli 0.144.2`);
+- Node.js;
+- Swift toolchain for source builds.
 
+## Build and run
 
-### Option B — Claude Code plugin
-
-Installs the hooks (status + open/close lifecycle) automatically from inside Claude Code:
-
-```
-/plugin marketplace add m1ckc3s/claude-status-bar
-/plugin install claude-status-bar@claude-status-bar
+```bash
+./script/build_and_run.sh --verify
 ```
 
-The plugin installs the hooks but not the app itself, so drag **Claude Status Bar** into Applications once (from the DMG). The plugin launches it automatically on session start.
+The universal app bundle is written to `build/CodexStatusBar.app`. To build a DMG:
 
-## How it works
+```bash
+./build.sh --dmg
+```
 
-The app is stateless. Claude Code fires hooks as it works; the app polls those updates and aggregates them across every live session into a single icon, a permission dot if one needs you, animating if any session is working, resting when all are idle. It launches itself when Claude Code opens and quits when nothing's running, so there's nothing to manage.
+Without a matching Developer ID certificate, the script creates an ad-hoc signed development build.
 
-The installer merges its hooks into `~/.claude/settings.json` (backing it up first), and the app's only network call is a once-a-day GitHub release check ([details](PRIVACY.md)).
+On first launch the app merges its user-level hooks into `~/.codex/hooks.json` and saves a one-time
+backup at `~/.codex/hooks.json.bak-codex-status-bar`. Open `/hooks` in a new Codex CLI session and
+review/trust the definitions before testing.
 
-## Troubleshooting
+## Install as a Codex plugin
 
-Icon quitting right after you open it, not showing, or not moving in Cursor? See [Troubleshooting](TROUBLESHOOTING.md), most of it is expected behavior, not a bug.
+The repository also contains a marketplace-ready plugin:
+
+```bash
+codex plugin marketplace add Jas952/codex-status-bar
+codex plugin add codex-status-bar@codex-status-bar
+```
+
+The plugin installs hooks, not the macOS app bundle. Install or build `CodexStatusBar.app` once,
+then use either the app-managed hooks or the plugin hooks, not both. Codex runs all matching hook
+sources concurrently, so enabling both produces duplicate updates.
+
+## State and privacy
+
+Runtime files live under `~/.codex/statusbar/`:
+
+```text
+state.d/<session-id>.json   per-session state
+mcp.json                    redacted MCP status
+mcp-monitor.pid             local sidecar liveness
+```
+
+The only network request made directly by the app is the once-a-day GitHub release check. Codex
+and configured MCP servers retain their own network and privacy behavior.
 
 ## Uninstall
 
 ```bash
-node "/Applications/ClaudeStatusBar.app/Contents/Resources/uninstall.js"   # removes only our hooks
+node "/Applications/CodexStatusBar.app/Contents/Resources/uninstall.js"
 ```
-Then drag the app to the Trash.
 
-## Acknowledgements
+Then remove the app. If installed through the plugin marketplace, remove or disable that plugin too.
 
-I built this for myself, then open-sourced it because other people might find it handy too, and I'm genuinely thrilled that so many of you do. An extra thank-you to everyone who went the extra mile and contributed code, fixes, and ideas.
+## Development checks
 
-**[See the contributors →](ACKNOWLEDGEMENTS.md)**
+```bash
+node tests/hooks.test.js
+python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/codex-status-bar
+./build.sh
+```
 
-## Trademark / Not Affiliated
+## Attribution and license
 
-This is an unofficial, open-source side project. **It is not affiliated with, endorsed by, or sponsored by Anthropic.** "Claude" and the Claude spark logo are trademarks of Anthropic, used here nominatively. This project is MIT licensed, but that covers the source code only and conveys no rights to Anthropic's trademarks or brand.
-
-If I'm violating or impeding your trademark, Contact me on X ([@mickces](https://x.com/mickces))
-This is a free side project; I'm not monetizing it.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for what fits, what doesn't, and how to build.
-
-## License
-
-MIT
+MIT licensed. See [LICENSE](LICENSE) and [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md). This is an
+unofficial community project and is not affiliated with or endorsed by OpenAI.

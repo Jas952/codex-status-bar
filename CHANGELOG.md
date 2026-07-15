@@ -1,6 +1,19 @@
 # Changelog
 
-All notable changes to Claude Status Bar are documented here. This project follows
+## 0.1.0 — Codex fork
+
+- Forked the AppKit status bar and per-session aggregation design for Codex.
+- Added Codex `SessionStart`, `UserPromptSubmit`, tool, approval, subagent, and stop hooks.
+- Added concurrency-safe active tool and subagent tracking.
+- Added active MCP server/tool labels.
+- Added redacted configured MCP inventory and live App Server health states with tool counts.
+- Added a marketplace-ready Codex plugin and user-level app installer.
+- Rebranded the app, bundle, release URLs, runtime paths, menu, and build artifacts.
+- Added hook reducer tests and a Codex Run action.
+
+The entries below document the inherited upstream project before the fork.
+
+All notable upstream changes were documented here. The upstream project followed
 [Semantic Versioning](https://semver.org/).
 
 ## [0.3.4] - 2026-07-09
