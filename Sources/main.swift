@@ -248,11 +248,15 @@ final class SessionRowView: NSView {
 
 final class StatusController: NSObject, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/state.d")
-    let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
+    let statusRoot = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/statusbar")
+    lazy var stateDir = (statusRoot as NSString).appendingPathComponent("state.d")
+    lazy var mcpStatePath = (statusRoot as NSString).appendingPathComponent("mcp.json")
+    let codexDesktopBundleID = "com.openai.codex"
 
     var pollTimer: Timer?
     var animTimer: Timer?
+    var uiMonitorProcess: Process?
+    var mcpMonitorProcess: Process?
     var frameIdx = 0
 
     let launchedAt = Date()
@@ -265,11 +269,14 @@ final class StatusController: NSObject, NSMenuDelegate {
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
     struct Session {
-        var id: String, state: String, label: String, project: String, transcript: String
+        var id: String, state: String, label: String, project: String, chatTitle: String, transcript: String
+        var tool: String, toolKind: String, mcpServer: String, mcpTool: String
+        var model: String, permissionMode: String, turnId: String
+        var activeToolCount: Int, activeAgentCount: Int
         var cwd: String         // session working directory; "" on pre-upgrade files
-        var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
+        var entrypoint: String  // local Codex surface: "cli" or "codex-app"
         var termProgram: String // TERM_PROGRAM for CLI sessions: "Apple_Terminal", "iTerm.app", …
-        var pid: Int32          // the session's `claude` process; kill(pid,0) drives liveness. 0 = pre-upgrade file.
+        var pid: Int32          // owning local process; kill(pid,0) drives CLI liveness
         var started: Bool       // true once the session had real activity (a prompt/tool); a merely-opened
                                 // conversation seeds started=false and stays out of the dropdown.
         var startedAt: Double, ts: Double
@@ -282,7 +289,17 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.state = o["state"] as? String ?? "idle"
             self.label = o["label"] as? String ?? ""
             self.project = o["project"] as? String ?? ""
+            self.chatTitle = o["chatTitle"] as? String ?? ""
             self.transcript = o["transcript"] as? String ?? ""
+            self.tool = o["tool"] as? String ?? ""
+            self.toolKind = o["toolKind"] as? String ?? ""
+            self.mcpServer = o["mcpServer"] as? String ?? ""
+            self.mcpTool = o["mcpTool"] as? String ?? ""
+            self.model = o["model"] as? String ?? ""
+            self.permissionMode = o["permissionMode"] as? String ?? ""
+            self.turnId = o["turnId"] as? String ?? ""
+            self.activeToolCount = (o["activeTools"] as? [String: Any])?.count ?? 0
+            self.activeAgentCount = (o["activeAgents"] as? [String: Any])?.count ?? 0
             self.cwd = o["cwd"] as? String ?? ""
             self.entrypoint = o["entrypoint"] as? String ?? ""
             self.termProgram = o["term_program"] as? String ?? ""
@@ -298,28 +315,59 @@ final class StatusController: NSObject, NSMenuDelegate {
     var prevState: [String: String] = [:]  // id -> previous raw state per session
     var menuIsOpen = false                  // refresh the dropdown's per-session timers only while open
     var sessionMenuItems: [(item: NSMenuItem, id: String)] = []
+    struct MCPServer {
+        let name: String, status: String, authStatus: String, disabledReason: String, error: String
+        let enabled: Bool
+        let toolCount: Int
+    }
+    var mcpServers: [MCPServer] = []
+    var mcpMTime: Date?
     var activeBase = ""        // label without the elapsed clock
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
     var activeColor: NSColor? = nil
 
-    let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
+    let brand = NSColor(srgbRed: 0.31, green: 0.49, blue: 1.0, alpha: 1) // #4f7dff
     let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "awaiting permission" yellow dot
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
-    enum AnimStyle: String { case web, code, crab }
-    var animStyle: AnimStyle = .web
+    enum AnimStyle: String { case web, code, terminal, crab }
+    enum IconPalette: String { case original, white, blue, system }
+    enum CloudMode { case idle, thinking, tool, permission }
+    struct SpringChannel {
+        var value: CGFloat = 0
+        var velocity: CGFloat = 0
+
+        mutating func step(toward target: CGFloat, dt: CGFloat) {
+            let stiffness: CGFloat = 96
+            let damping: CGFloat = 17
+            velocity += (stiffness * (target - value) - damping * velocity) * dt
+            value += velocity * dt
+        }
+
+        func settled(at target: CGFloat) -> Bool {
+            abs(value - target) < 0.002 && abs(velocity) < 0.004
+        }
+    }
+    var animStyle: AnimStyle = .code
     var showTimer = false
-    var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
+    var iconPalette: IconPalette = .original
+    var cloudMode: CloudMode = .idle
+    var cloudActivity = SpringChannel()
+    var cloudTool = SpringChannel()
+    var cloudAttention = SpringChannel()
+    var cloudClock: CGFloat = 0
+    var cloudLastTick = Date().timeIntervalSinceReferenceDate
+    var cloudLastTitleSecond = -1
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
-    // Claude Code's SPINNER_VERBS, minus the hyphenated/tongue-twister ones. Longest kept is ~14 chars
+    // Terminal Glyph's SPINNER_VERBS, minus the hyphenated/tongue-twister ones. Longest kept is ~14 chars
     // ("Hullaballooing"/"Metamorphosing"); with the timer showing they can get wide in a crowded menu bar.
     let thinkingWords = [
         "Accomplishing", "Actioning", "Actualizing", "Architecting", "Baking", "Beaming", "Beboppin'",
         "Befuddling", "Billowing", "Blanching", "Bloviating", "Boogieing", "Boondoggling", "Booping",
         "Bootstrapping", "Brewing", "Bunning", "Burrowing", "Calculating", "Canoodling", "Caramelizing",
-        "Cascading", "Catapulting", "Cerebrating", "Channeling", "Channelling", "Churning", "Clauding",
+        "Cascading", "Catapulting", "Cerebrating", "Channeling", "Channelling", "Churning", "Coding",
         "Coalescing", "Cogitating", "Combobulating", "Composing", "Computing", "Concocting", "Considering",
         "Contemplating", "Cooking", "Crafting", "Creating", "Crunching", "Crystallizing", "Cultivating",
         "Deciphering", "Deliberating", "Determining", "Doing", "Doodling", "Drizzling", "Ebbing",
@@ -340,13 +388,20 @@ final class StatusController: NSObject, NSMenuDelegate {
         "Thinking", "Thundering", "Tinkering", "Tomfoolering", "Transfiguring", "Transmuting", "Twisting",
         "Undulating", "Unfurling", "Unravelling", "Vibing", "Waddling", "Wandering", "Warping",
         "Whirlpooling", "Whirring", "Whisking", "Wibbling", "Working", "Wrangling", "Zesting", "Zigzagging"]
-    var iconColor: NSColor? { iconSystem ? nil : brand } // nil => render as an adaptive template
-    let codeGlyphs = ["✻", "✽", "✶", "✳", "✢"]
+    var iconColor: NSColor? {
+        switch iconPalette {
+        case .white: return .white
+        case .system: return nil
+        default: return brand
+        }
+    }
+    let codeGlyphs = ["›", "»", "·", "»", "›"]
     let codePeaks: [CGFloat] = [1.0, 1.0, 1.0, 1.0, 1.0]
     let codeDip: CGFloat = 0.14 // glyph shrinks to this at each swap
     let codeSub = 18            // sub-frames per glyph (tween smoothness)
     let codeCycle: Double = 3.8 // seconds for the full loop (lower = faster)
     lazy var codeGlyphMasks: [NSImage] = codeGlyphs.map { StatusController.glyphMask($0) }
+    let cloudFPS: Double = 15
     let crabFPS: Double = 12.5 // matches the source GIF's 0.08s frame delay
     lazy var crabFrames: [NSImage] = StatusController.decodePNGs(clawdCrabFramePNGs)
     // Template frames: bright pixels (white eyes) become transparent holes so they're
@@ -355,14 +410,16 @@ final class StatusController: NSObject, NSMenuDelegate {
     var fps: Double {
         switch animStyle {
         case .web: return spriteFPS
-        case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
+        case .code: return cloudFPS
+        case .terminal: return Double(codeGlyphs.count * codeSub) / codeCycle
         case .crab: return crabFPS
         }
     }
     var frameCount: Int {
         switch animStyle {
         case .web: return max(1, frames.count)
-        case .code: return codeGlyphs.count * codeSub
+        case .code: return 360
+        case .terminal: return codeGlyphs.count * codeSub
         case .crab: return max(1, crabFrames.count)
         }
     }
@@ -371,7 +428,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         super.init()
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
-        if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
+        if let raw = d.string(forKey: "iconPalette"), let palette = IconPalette(rawValue: raw) {
+            switch palette {
+            case .original, .white: iconPalette = palette
+            case .blue: iconPalette = .original
+            case .system: iconPalette = .white
+            }
+        } else if d.object(forKey: "iconSystem") != nil {
+            iconPalette = d.bool(forKey: "iconSystem") ? .white : .original
+        }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         let menu = NSMenu()
@@ -383,6 +448,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         pollTimer = t
         tick()
         ensureHooksInstalled()
+        startUIMonitor()
+        refreshMCPStatus()
         checkForUpdate()
     }
 
@@ -395,7 +462,7 @@ final class StatusController: NSObject, NSMenuDelegate {
               let installer = Bundle.main.path(forResource: "install", ofType: "js") else { return }
         DispatchQueue.global().async {
             guard let node = Self.locateNode() else {
-                NSLog("ClaudeStatusBar: could not find node; hooks not installed (will retry next launch)")
+                NSLog("CodexStatusBar: could not find node; hooks not installed (will retry next launch)")
                 return
             }
             let task = Process()
@@ -445,8 +512,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: update check
 
     var currentVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0" }
-    let releaseAPIURL = "https://api.github.com/repos/m1ckc3s/claude-status-bar/releases/latest"
-    let releasePageURL = "https://github.com/m1ckc3s/claude-status-bar/releases/latest"
+    let releaseAPIURL = "https://api.github.com/repos/Jas952/codex-status-bar/releases/latest"
+    let releasePageURL = "https://github.com/Jas952/codex-status-bar/releases/latest"
 
     // Once/day: cache GitHub's latest release tag in UserDefaults. Nothing sent to us.
     func checkForUpdate() {
@@ -455,7 +522,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if now - d.double(forKey: "lastUpdateCheck") < 86400 { return }
         guard let url = URL(string: releaseAPIURL) else { return }
         var req = URLRequest(url: url)
-        req.setValue("ClaudeStatusBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
+        req.setValue("CodexStatusBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -506,6 +573,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
+        reloadMCPStatus() // the monitor may have finished after launch; never require a manual refresh
 
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read per
         // session) to catch a checkout made while a session sat idle.
@@ -525,7 +593,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let ordered = allOrdered.filter { s in
                 let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
                 let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
-                let gated = s.entrypoint == "claude-desktop"   // only the desktop app is gated
+                let gated = s.entrypoint == "codex-app"   // only the desktop app is gated
                 return !gated || s.started || !resting
             }
         // Hide rows idle past the threshold, but ALWAYS keep the most-recent started session (floor at
@@ -552,14 +620,62 @@ final class StatusController: NSObject, NSMenuDelegate {
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
             }
             menu.addItem(.separator())
-        } else if claudeDesktopRunning() {
-            // No live session to pin, but the desktop app is up — give a way to jump back in.
+        } else {
+            // Empty should be explanatory, not look like a settings-only app. Hooks are loaded when a
+            // Codex task starts, so a task that predates installation cannot emit retroactive events.
             menu.addItem(header("Sessions"))
-            let open = NSMenuItem(title: "Open Claude", action: #selector(openClaude), keyEquivalent: "")
-            open.target = self
-            menu.addItem(open)
+            menu.addItem(disabledItem("No tracked tasks yet"))
+            menu.addItem(disabledItem("Codex UI is supported · CLI is optional"))
+            menu.addItem(disabledItem("Restart Codex, then start a new task"))
+
+            let preview = NSMenuItem(title: "Status preview", action: nil, keyEquivalent: "")
+            let previewMenu = NSMenu()
+            for title in [
+                "◌  Thinking / working",
+                "●  Using tool or MCP",
+                "!  Waiting for approval",
+                "✓  Done / idle",
+            ] { previewMenu.addItem(disabledItem(title)) }
+            preview.submenu = previewMenu
+            menu.addItem(preview)
+
+            if codexDesktopRunning() {
+                let open = NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "")
+                open.target = self
+                menu.addItem(open)
+            }
             menu.addItem(.separator())
         }
+
+        menu.addItem(header("MCP Servers"))
+        if mcpServers.isEmpty {
+            let empty = NSMenuItem(title: "No configured servers", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for server in mcpServers.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) {
+                let symbol: String
+                let detail: String
+                if !server.enabled || server.status == "disabled" {
+                    symbol = "○"; detail = server.disabledReason.isEmpty ? "Disabled" : server.disabledReason
+                } else if server.status == "authRequired" || server.authStatus == "not_logged_in" {
+                    symbol = "◐"; detail = "Authentication required"
+                } else if server.status == "failed" || server.status == "cancelled" {
+                    symbol = "!"; detail = server.error.isEmpty ? server.status.capitalized : server.error
+                } else if server.status == "starting" || server.status == "configured" {
+                    symbol = "◌"; detail = "Starting"
+                } else {
+                    symbol = "●"; detail = server.toolCount > 0 ? "Ready · \(server.toolCount) tools" : "Ready"
+                }
+                let item = NSMenuItem(title: "\(symbol)  \(server.name) — \(detail)", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+        }
+        let refresh = NSMenuItem(title: "Refresh MCP status", action: #selector(refreshMCPStatus), keyEquivalent: "")
+        refresh.target = self
+        menu.addItem(refresh)
+        menu.addItem(.separator())
 
         menu.addItem(header("Options"))
         menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
@@ -575,7 +691,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let animParent = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
         let animSub = NSMenu()
-        for (style, name) in [(AnimStyle.web, "Claude Spark"), (AnimStyle.code, "Claude Code"), (AnimStyle.crab, "Crab Walking")] {
+        for (style, name) in [(AnimStyle.code, "Codex Cloud"), (AnimStyle.terminal, "Terminal Pulse")] {
             let it = NSMenuItem(title: name, action: #selector(chooseStyle(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = style.rawValue
@@ -587,11 +703,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let colorParent = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
         let colorSub = NSMenu()
-        for (sys, name) in [(false, "Orange"), (true, "System")] {
+        for (palette, name) in [(IconPalette.original, "Original"), (IconPalette.white, "System White")] {
             let it = NSMenuItem(title: name, action: #selector(chooseColor(_:)), keyEquivalent: "")
             it.target = self
-            it.representedObject = sys
-            it.state = iconSystem == sys ? .on : .off
+            it.representedObject = palette.rawValue
+            it.state = iconPalette == palette ? .on : .off
             colorSub.addItem(it)
         }
         colorParent.submenu = colorSub
@@ -614,6 +730,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         it.isEnabled = false
         return it
+    }
+
+    func disabledItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
     }
 
     func toggleRow(title: String, qualifier: String? = nil, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {
@@ -662,16 +784,17 @@ final class StatusController: NSObject, NSMenuDelegate {
         // plus a live timer while working since the spinner can't convey elapsed.
         var line = truncated(sessionName(s))
         if !s.branch.isEmpty { line += " · " + truncated(s.branch, max: 22, keep: 20) }
+        if !s.mcpServer.isEmpty { line += " · " + truncated(s.mcpServer, max: 18, keep: 16) }
         if eff == "thinking" || eff == "tool", s.startedAt > 0 {
             line += "  " + elapsed(max(0, Int(now - s.startedAt)))
         }
         return line
     }
 
-    // Live layout knobs read fresh from ~/.claude/statusbar/uiconfig.json each render, so numeric
+    // Live layout knobs read fresh from ~/.codex/statusbar/uiconfig.json each render, so numeric
     // tweaks (timer column, pill offset, gap) take effect on the next menu open with NO rebuild.
     func uiConfig() -> [String: Double] {
-        let p = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/uiconfig.json")
+        let p = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/statusbar/uiconfig.json")
         guard let d = FileManager.default.contents(atPath: p),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         return j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
@@ -699,6 +822,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         // Truncated rows stay inspectable: full name, branch, and path on hover.
         var tip = sessionName(s)
         if !s.branch.isEmpty { tip += " · " + s.branch }
+        if !s.chatTitle.isEmpty && !s.project.isEmpty { tip += "\nProject: " + s.project }
+        if !s.model.isEmpty { tip += "\nModel: " + s.model }
+        if !s.mcpServer.isEmpty { tip += "\nMCP: " + s.mcpServer + " / " + s.mcpTool }
+        if s.activeAgentCount > 0 { tip += "\nSubagents: \(s.activeAgentCount)" }
         if !s.cwd.isEmpty { tip += "\n" + s.cwd }
         v.toolTip = tip
     }
@@ -714,16 +841,17 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Just the repo/cwd (parent-qualified on a name collision); the surface (CLI/APP) renders as a
     // trailing badge instead of inline.
     func sessionName(_ s: Session) -> String {
+        if !s.chatTitle.isEmpty { return s.chatTitle }
         if !s.displayName.isEmpty { return s.displayName }
         return s.project.isEmpty ? "session" : s.project
     }
 
-    // CLAUDE_CODE_ENTRYPOINT -> a short all-caps badge tag.
+    // Local surface -> a short all-caps badge tag.
     // Every surface collapses to a 3-letter pill: the desktop app is APP, everything else (cli,
     // vscode, cursor, windsurf, …) is a terminal/editor context, so CLI. Keeps pills uniform.
     func surfaceTag(_ entrypoint: String) -> String {
         switch entrypoint {
-        case "claude-desktop": return "APP"
+        case "codex-app": return "APP"
         case "":               return ""
         default:               return "CLI"
         }
@@ -763,7 +891,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    // The shell-style prompt caret (U+276F, what Claude Code shows when idle), dimmed and centered in
+    // The shell-style prompt caret (U+276F, what Terminal Glyph shows when idle), dimmed and centered in
     // a square that matches the spinner gutter so the resting rows align with the working ones.
     lazy var restingCaret: NSImage? = {
         let glyph = "\u{276F}" as NSString
@@ -805,6 +933,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func workingLabel(_ s: Session) -> String {
+        if !s.mcpServer.isEmpty { return "\(s.mcpServer) · \(s.mcpTool)" }
         if useThinkingWords, s.state == "thinking", let w = sessionWord[s.id], !w.isEmpty { return w + "…" }
         if !s.label.isEmpty { return s.label }
         return s.state == "tool" ? "Working…" : "Thinking…"
@@ -821,7 +950,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         sessionWord[s.id] = w
     }
 
-    // "1m 1s" / "43s" — Claude Code's elapsed-clock style.
+    // "1m 1s" / "43s" — Terminal Glyph's elapsed-clock style.
     func elapsed(_ secs: Int) -> String {
         let m = secs / 60, s = secs % 60
         return m > 0 ? "\(m)m \(s)s" : "\(s)s"
@@ -829,22 +958,17 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
-    @objc func openClaude() {
+    @objc func openCodex() {
         let ws = NSWorkspace.shared
-        if let url = ws.urlForApplication(withBundleIdentifier: "com.anthropic.claudefordesktop") {
+        if let url = ws.urlForApplication(withBundleIdentifier: codexDesktopBundleID) {
             ws.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
         }
     }
 
-    // Row click. Desktop session: focus the Claude app. Do NOT use claude://resume?session=<id>,
-    // that calls importCliSession() and spawns a duplicate "ungrouped" session record
-    // (local_<random>.json with cliSessionId=<id>) every click, it's an import verb, not focus.
-    // The clean focus path (claude://code/<bridgeSessionId>) needs an opaque session_/cse_ bridge
-    // id the app never exposes to us (not in env, not derivable from the UUID, undefined on disk).
-    // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
-    // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
+    // Row click: focus the Codex app or the terminal/editor application that owns the CLI session.
+    // Codex does not document a stable public deep link for focusing an arbitrary existing task.
     func openSession(_ id: String, entrypoint: String, termProgram: String) {
-        if entrypoint == "claude-desktop" { openClaude(); return }
+        if entrypoint == "codex-app" { openCodex(); return }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
         let app: String
         switch termProgram {
@@ -863,9 +987,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
 
     @objc func chooseColor(_ sender: NSMenuItem) {
-        guard let sys = sender.representedObject as? Bool else { return }
-        iconSystem = sys
-        UserDefaults.standard.set(iconSystem, forKey: "iconSystem")
+        guard let raw = sender.representedObject as? String, let palette = IconPalette(rawValue: raw) else { return }
+        iconPalette = palette
+        UserDefaults.standard.set(raw, forKey: "iconPalette")
+        UserDefaults.standard.set(palette == .white || palette == .system,
+                                  forKey: "iconSystem") // downgrade compatibility
         evaluate() // re-render the current state in the new color
     }
 
@@ -883,8 +1009,128 @@ final class StatusController: NSObject, NSMenuDelegate {
     func tick() {
         checkLifecycle()
         reloadSessions()
+        reloadMCPStatus()
         evaluate()
         if menuIsOpen { refreshOpenMenuRows() }
+    }
+
+    func parseMCPServers(_ object: Any) -> [MCPServer] {
+        let rows: [[String: Any]]
+        if let array = object as? [[String: Any]] { rows = array }
+        else if let dictionary = object as? [String: Any], let array = dictionary["servers"] as? [[String: Any]] { rows = array }
+        else { return [] }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String, !name.isEmpty else { return nil }
+            let enabled = row["enabled"] as? Bool ?? true
+            let auth = row["auth_status"] as? String ?? row["authStatus"] as? String ?? "unsupported"
+            let disabled = row["disabled_reason"] as? String ?? row["disabledReason"] as? String ?? ""
+            let status = row["status"] as? String ?? (enabled ? (auth == "not_logged_in" ? "authRequired" : "configured") : "disabled")
+            let toolCount = (row["toolCount"] as? NSNumber)?.intValue ?? 0
+            let error = row["error"] as? String ?? ""
+            return MCPServer(name: name, status: status, authStatus: auth, disabledReason: disabled,
+                             error: error, enabled: enabled, toolCount: toolCount)
+        }
+    }
+
+    func reloadMCPStatus() {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: mcpStatePath),
+              let modified = attrs[.modificationDate] as? Date,
+              mcpMTime != modified,
+              let data = fm.contents(atPath: mcpStatePath),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return }
+        mcpMTime = modified
+        mcpServers = parseMCPServers(object)
+    }
+
+    static func locateCodex() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex",
+            "\(home)/.local/bin/codex", "\(home)/.npm-global/bin/codex",
+        ]
+        if let hit = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return hit }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-ilc", "command -v codex"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        let path = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    func startUIMonitor() {
+        let pidPath = (statusRoot as NSString).appendingPathComponent("ui-monitor.pid")
+        if let data = FileManager.default.contents(atPath: pidPath),
+           let text = String(data: data, encoding: .utf8),
+           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           sidecarAlive(pid, marker: "ui-monitor.js") { return }
+        try? FileManager.default.removeItem(atPath: pidPath)
+        guard let script = Bundle.main.path(forResource: "ui-monitor", ofType: "js"),
+              let node = Self.locateNode() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        if (try? process.run()) != nil { uiMonitorProcess = process }
+    }
+
+    @objc func refreshMCPStatus() {
+        let pidPath = (statusRoot as NSString).appendingPathComponent("mcp-monitor.pid")
+        if let data = FileManager.default.contents(atPath: pidPath),
+           let text = String(data: data, encoding: .utf8),
+           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           sidecarAlive(pid, marker: "mcp-monitor.js") {
+            reloadMCPStatus()
+            return
+        }
+        try? FileManager.default.removeItem(atPath: pidPath)
+        if let script = Bundle.main.path(forResource: "mcp-monitor", ofType: "js"),
+           let node = Self.locateNode() {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: node)
+            process.arguments = [script]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            if (try? process.run()) != nil {
+                mcpMonitorProcess = process
+                return
+            }
+        }
+        // Fallback for development builds without the bundled monitor.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self, let codex = Self.locateCodex() else { return }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: codex)
+            process.arguments = ["mcp", "list", "--json"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return }
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let object = try? JSONSerialization.jsonObject(with: pipe.fileHandleForReading.readDataToEndOfFile()) else { return }
+            let servers = self.parseMCPServers(object)
+            let safeRows: [[String: Any]] = servers.map { [
+                "name": $0.name, "enabled": $0.enabled, "authStatus": $0.authStatus,
+                "disabledReason": $0.disabledReason, "status": $0.status,
+                "toolCount": $0.toolCount, "error": $0.error,
+            ] }
+            let payload: [String: Any] = ["servers": safeRows, "ts": Date().timeIntervalSince1970]
+            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                try? FileManager.default.createDirectory(atPath: self.statusRoot, withIntermediateDirectories: true)
+                let tmp = self.mcpStatePath + ".\(ProcessInfo.processInfo.processIdentifier).tmp"
+                try? data.write(to: URL(fileURLWithPath: tmp), options: .atomic)
+                _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: self.mcpStatePath), withItemAt: URL(fileURLWithPath: tmp))
+                if !FileManager.default.fileExists(atPath: self.mcpStatePath) { try? data.write(to: URL(fileURLWithPath: self.mcpStatePath), options: .atomic) }
+            }
+            DispatchQueue.main.async { self.mcpServers = servers }
+        }
     }
 
     // The .json session files currently in state.d/ (ignores the .tmp files mid-write).
@@ -977,12 +1223,21 @@ final class StatusController: NSObject, NSMenuDelegate {
         for id in Array(sessions.keys) {
             guard var s = sessions[id] else { continue }
             s.eff = effectiveState(s, now: now)   // compute once per tick; the menu + tooltip reuse it
-            // Reap on PROCESS death, not idle time: a session leaves only when its `claude` process is
+            // Reap on PROCESS death, not idle time: a CLI session leaves when its owning process is
             // gone (closed/crashed terminal, quit app), so an idle-but-open session stays and the icon
             // holds. Pre-upgrade files have no pid (0) — fall back to the old idle+age prune so they
             // can't linger forever. This is also what keeps state.d self-cleaning (no growing cache).
-            let dead = s.pid > 0 ? !pidAlive(s.pid)
-                                 : (s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge)
+            let dead: Bool
+            if s.entrypoint == "codex-app" {
+                // Desktop hooks run in short-lived child processes, so their PPID cannot represent
+                // task liveness. Keep UI sessions while Codex itself is running; idle-age filtering
+                // still hides old rows without deleting their state.
+                dead = !codexDesktopRunning()
+            } else if s.pid > 0 {
+                dead = !pidAlive(s.pid)
+            } else {
+                dead = s.eff == "idle" && stalePruneAge > 0 && now - s.ts > stalePruneAge
+            }
             if dead {
                 try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
                 sessions[id] = nil; fileMTimes[id + ".json"] = nil; prevState[id] = nil; sessionWord[id] = nil
@@ -1024,9 +1279,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
         case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false, startedAt: 0, dot: true)
-        case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true, startedAt: lead.startedAt)
+            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false,
+                   startedAt: 0, dot: true, cloudMode: .permission)
+        case "thinking":
+            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true,
+                   startedAt: lead.startedAt, cloudMode: .thinking)
+        case "tool":
+            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true,
+                   startedAt: lead.startedAt, cloudMode: .tool)
         default:
             renderResting()
         }
@@ -1034,15 +1294,12 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func renderResting() { render(label: "", color: iconColor, animate: false, startedAt: 0) }
 
-    // Per-session effective state with two recovery nets: an absolute age cap, plus the transcript
-    // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
-    // collapses to rest.
+    // Per-session effective state with an absolute-age recovery cap. Codex documents transcript_path
+    // for convenience but not its format, so the status app deliberately does not parse transcripts.
     func effectiveState(_ s: Session, now: Double) -> String {
         if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
             let cap: Double = s.state == "permission" ? 7200 : 900
             if now - s.ts > cap { return "idle" }
-            if !s.transcript.isEmpty, let last = lastTurnLine(ofFileAt: s.transcript),
-               last.contains("interrupted by user") { return "idle" }
             return s.state
         }
         return s.state == "done" ? "idle" : s.state
@@ -1051,25 +1308,39 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: self-quit lifecycle
 
-    func claudeDesktopRunning() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == claudeDesktopBundleID }
+    func codexDesktopRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == codexDesktopBundleID }
     }
 
     func sessionCount() -> Int { stateFileNames().count }
 
-    // Liveness probe: is this session's `claude` process still alive? kill(pid,0) returns 0 if the
+    // Liveness probe: is this session's owning process still alive? kill(pid,0) returns 0 if the
     // process exists; EPERM = exists but not ours (won't happen, same user); ESRCH = gone.
     func pidAlive(_ pid: Int32) -> Bool {
         if pid <= 0 { return false }
         return kill(pid, 0) == 0 || errno == EPERM
     }
 
-    // Stay while Claude desktop is open OR a session is active; otherwise quit after a
+    func sidecarAlive(_ pid: Int32, marker: String) -> Bool {
+        guard pidAlive(pid) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        let command = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return process.terminationStatus == 0 && command.contains(marker)
+    }
+
+    // Stay while Codex desktop is open OR a session is active; otherwise quit after a
     // short debounced grace (warmup-session churn must not kill us).
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
-        if claudeDesktopRunning() || sessionCount() > 0 {
+        if codexDesktopRunning() || sessionCount() > 0 {
             notNeededSince = nil
             return
         }
@@ -1091,7 +1362,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         return s.split(separator: "\n").last { !$0.isEmpty }.map(String.init)
     }
 
-    // Last actual turn line (a user/assistant message), ignoring the bookkeeping lines Claude Code
+    // Last actual turn line (a user/assistant message), ignoring the bookkeeping lines Terminal Glyph
     // appends after an interrupt (system/away_summary, last-prompt, ai-title, mode, permission-mode).
     // Those would otherwise hide the "interrupted by user" marker and freeze the amber dot.
     func lastTurnLine(ofFileAt path: String) -> String? {
@@ -1108,14 +1379,30 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: render
 
-    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, dot: Bool = false) {
+    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double,
+                dot: Bool = false, cloudMode newCloudMode: CloudMode = .idle) {
         guard let button = statusItem.button else { return }
         button.contentTintColor = nil // we paint the icon color ourselves; template-tint is unreliable
         activeBase = label
         activeColor = color
         self.startedAt = startedAt
 
-        if animate {
+        if animStyle == .code {
+            cloudMode = newCloudMode
+            let shouldMove = cloudMode != .idle || !cloudDynamicsSettled()
+            if shouldMove {
+                if animTimer == nil {
+                    cloudLastTick = Date().timeIntervalSinceReferenceDate
+                    let t = Timer(timeInterval: 1.0 / cloudFPS, repeats: true) { [weak self] _ in self?.animStep() }
+                    t.tolerance = 1.0 / (cloudFPS * 5)
+                    RunLoop.main.add(t, forMode: .common)
+                    animTimer = t
+                }
+            } else {
+                animTimer?.invalidate(); animTimer = nil
+                button.image = cloudIcon(color: iconColor)
+            }
+        } else if animate {
             if animTimer == nil {
                 let t = Timer(timeInterval: 1.0 / fps, repeats: true) { [weak self] _ in self?.animStep() }
                 RunLoop.main.add(t, forMode: .common)
@@ -1127,13 +1414,57 @@ final class StatusController: NSObject, NSMenuDelegate {
             button.image = dot ? dotIcon(color: color) : restingIcon(color: color)
         }
         applyTitle()
-        if button.image == nil { button.image = dot ? dotIcon(color: color) : restingIcon(color: color) }
+        if button.image == nil {
+            button.image = animStyle == .code ? cloudIcon(color: iconColor) :
+                (dot ? dotIcon(color: color) : restingIcon(color: color))
+        }
     }
 
     func animStep() {
+        if animStyle == .code {
+            let now = Date().timeIntervalSinceReferenceDate
+            let dt = CGFloat(min(0.05, max(1.0 / 120.0, now - cloudLastTick)))
+            cloudLastTick = now
+            cloudClock += dt
+            stepCloudDynamics(dt: dt)
+            statusItem.button?.image = cloudIcon(color: iconColor)
+            if cloudMode == .idle && cloudDynamicsSettled() {
+                animTimer?.invalidate(); animTimer = nil
+                cloudActivity = SpringChannel(); cloudTool = SpringChannel(); cloudAttention = SpringChannel()
+                statusItem.button?.image = cloudIcon(color: iconColor)
+            }
+            let titleSecond = Int(now)
+            if titleSecond != cloudLastTitleSecond {
+                cloudLastTitleSecond = titleSecond
+                applyTitle()
+            }
+            return
+        }
         frameIdx = (frameIdx + 1) % frameCount
         statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
         applyTitle() // refresh the elapsed clock
+    }
+
+    func cloudTargets() -> (activity: CGFloat, tool: CGFloat, attention: CGFloat) {
+        switch cloudMode {
+        case .idle: return (0, 0, 0)
+        case .thinking: return (0.72, 0, 0)
+        case .tool: return (1, 1, 0)
+        case .permission: return (0.34, 0, 1)
+        }
+    }
+
+    func stepCloudDynamics(dt: CGFloat) {
+        let target = cloudTargets()
+        cloudActivity.step(toward: target.activity, dt: dt)
+        cloudTool.step(toward: target.tool, dt: dt)
+        cloudAttention.step(toward: target.attention, dt: dt)
+    }
+
+    func cloudDynamicsSettled() -> Bool {
+        let target = cloudTargets()
+        return cloudActivity.settled(at: target.activity) &&
+            cloudTool.settled(at: target.tool) && cloudAttention.settled(at: target.attention)
     }
 
     func applyTitle() {
@@ -1167,6 +1498,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func iconImage(color: NSColor?, frame: Int) -> NSImage {
         if animStyle == .web { return tint(frames, color: color, frame: frame) }
         if animStyle == .crab { return crabIcon(color: color, frame: frame) }
+        if animStyle == .code { return cloudIcon(color: color) }
         let i = (frame / codeSub) % codeGlyphs.count
         let local = (CGFloat(frame % codeSub) + 0.5) / CGFloat(codeSub) // 0…1 within this glyph
         // Scale envelope per glyph: rise, hold at peak, fall, so each lands before the swap.
@@ -1176,6 +1508,102 @@ final class StatusController: NSObject, NSMenuDelegate {
         else { env = 1 }
         let scale = codeDip + (codePeaks[i] - codeDip) * env
         return codeIcon(color: color, glyph: i, scale: scale)
+    }
+
+    // A continuously evaluated Codex cloud. Spring channels move toward semantic state
+    // targets while time-based waves deform the live geometry; there are no sprite frames.
+    func cloudIcon(color: NSColor?, forcedAttention: CGFloat? = nil) -> NSImage {
+        let s: CGFloat = 18
+        let clamp: (CGFloat) -> CGFloat = { min(1, max(0, $0)) }
+        let activity = forcedAttention == nil ? clamp(cloudActivity.value) : 0.34
+        let tool = forcedAttention == nil ? clamp(cloudTool.value) : 0
+        let attention = clamp(forcedAttention ?? cloudAttention.value)
+        let time = cloudClock
+        let slowWave = sin(time * 2.7)
+        let toolWave = sin(time * 7.4)
+        let motion = slowWave * (1 - tool) + toolWave * tool
+        let scaleX = 1 + 0.018 * activity * slowWave + 0.055 * tool * toolWave - 0.025 * attention
+        let scaleY = 1 + 0.028 * activity * slowWave - 0.025 * tool * toolWave -
+            0.045 * attention + 0.014 * attention * sin(time * 5.2)
+        let palette = iconPalette
+        let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            StatusController.drawCloud(context: ctx, palette: palette, time: time,
+                                       activity: activity, tool: tool, attention: attention,
+                                       motion: motion, scaleX: scaleX, scaleY: scaleY)
+            return true
+        }
+        img.isTemplate = iconPalette == .system && attention < 0.015
+        return img
+    }
+
+    static func cloudColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, attention: CGFloat) -> CGColor {
+        let ar: CGFloat = 0.95, ag: CGFloat = 0.73, ab: CGFloat = 0.18
+        return NSColor(srgbRed: r + (ar - r) * attention,
+                       green: g + (ag - g) * attention,
+                       blue: b + (ab - b) * attention, alpha: 1).cgColor
+    }
+
+    static func drawCloud(context ctx: CGContext, palette: IconPalette, time: CGFloat,
+                          activity: CGFloat, tool: CGFloat, attention: CGFloat,
+                          motion: CGFloat, scaleX: CGFloat, scaleY: CGFloat) {
+        let original = palette == .original
+        ctx.saveGState()
+        ctx.translateBy(x: 9, y: 9)
+        ctx.scaleBy(x: scaleX, y: scaleY)
+        ctx.translateBy(x: -9, y: -9 + 0.10 * activity * motion)
+
+        let base = CGRect(x: 2.0, y: 3.4, width: 14.0, height: 9.0)
+        ctx.addPath(CGPath(roundedRect: base, cornerWidth: 4.4, cornerHeight: 4.4, transform: nil))
+        let lobes: [(CGRect, CGFloat)] = [
+            (CGRect(x: 1.3, y: 6.0, width: 6.3, height: 6.5), 0.0),
+            (CGRect(x: 3.7, y: 8.0, width: 6.6, height: 6.4), 1.1),
+            (CGRect(x: 7.2, y: 8.7, width: 6.3, height: 6.1), 2.2),
+            (CGRect(x: 10.5, y: 6.4, width: 6.2, height: 6.5), 3.3),
+        ]
+        for (rect, offset) in lobes {
+            let wave = sin(time * (2.7 + 4.5 * tool) + offset * (1 + 0.35 * tool))
+            let grow = (0.10 + 0.20 * tool) * activity * wave + 0.07 * attention * sin(time * 5.2 + offset)
+            let dx = 0.16 * tool * wave
+            let dy = 0.12 * activity * (1 - tool) * wave
+            ctx.addEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: dx, dy: dy))
+        }
+        if original {
+            ctx.clip()
+            let colors = [
+                cloudColor(0.19, 0.16, 1.0, attention: attention),
+                cloudColor(0.30, 0.42, 1.0, attention: attention),
+                cloudColor(0.75, 0.59, 1.0, attention: attention),
+            ] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                         colors: colors, locations: [0, 0.56, 1]) {
+                ctx.drawLinearGradient(gradient, start: CGPoint(x: 9, y: 3),
+                                       end: CGPoint(x: 9, y: 15), options: [])
+            }
+        } else {
+            let fill: CGColor
+            switch palette {
+            case .white: fill = cloudColor(1, 1, 1, attention: attention)
+            case .system: fill = cloudColor(0, 0, 0, attention: attention)
+            default: fill = cloudColor(0.31, 0.49, 1.0, attention: attention)
+            }
+            ctx.setFillColor(fill); ctx.fillPath()
+        }
+        ctx.restoreGState()
+
+        // Keep the logo mark exact and motionless. Only the surrounding cloud may deform;
+        // this prevents the prompt from becoming an ambiguous vertical stroke mid-transition.
+        ctx.saveGState()
+        ctx.setBlendMode(original ? .normal : .clear)
+        if original { ctx.setStrokeColor(NSColor.white.cgColor); ctx.setFillColor(NSColor.white.cgColor) }
+        ctx.setLineCap(.round); ctx.setLineJoin(.round)
+        ctx.setLineWidth(1.65)
+        ctx.move(to: CGPoint(x: 5.4, y: 10.8))
+        ctx.addLine(to: CGPoint(x: 7.6, y: 8.8))
+        ctx.addLine(to: CGPoint(x: 5.4, y: 6.8)); ctx.strokePath()
+        ctx.move(to: CGPoint(x: 9.5, y: 6.9))
+        ctx.addLine(to: CGPoint(x: 12.4, y: 6.9)); ctx.strokePath()
+        ctx.restoreGState()
     }
 
     // nil color => adaptive template image (system draws it black/white per the menu bar).
@@ -1228,14 +1656,17 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    let logoSet: [NSImage] = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:)).map { [$0] } ?? []
     func restingIcon(color: NSColor?) -> NSImage {
-        if animStyle == .crab { return crabIcon(color: color, frame: 0) }
-        return tint(logoSet.isEmpty ? frames : logoSet, color: color, frame: 0)
+        switch animStyle {
+        case .code: return cloudIcon(color: color)
+        case .terminal: return codeIcon(color: color, glyph: 0, scale: 0.82)
+        case .web: return tint(frames, color: color, frame: 0)
+        case .crab: return crabIcon(color: color, frame: 0)
+        }
     }
 
     // nil color (System) => adaptive shaded template (see adaptiveCrabFrame in CrabRender.swift);
-    // non-nil (Orange) => the original full-color sprite, drawn as-is.
+    // non-nil (brand mode) => the original full-color sprite, drawn as-is.
     func crabIcon(color: NSColor?, frame: Int) -> NSImage {
         guard !crabFrames.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
         let pool = color == nil ? crabTemplateFrames : crabFrames
@@ -1253,14 +1684,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func dotIcon(color: NSColor?) -> NSImage {
-        let s: CGFloat = 18, d: CGFloat = 9
-        let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
-            (color ?? .systemYellow).setFill()
-            NSBezierPath(ovalIn: NSRect(x: (s - d) / 2, y: (s - d) / 2, width: d, height: d)).fill()
-            return true
-        }
-        img.isTemplate = (color == nil)
-        return img
+        cloudIcon(color: color ?? .systemYellow, forcedAttention: 1)
     }
 
     // Paint `color` through a frame mask's alpha (destinationIn) so frames recolor.

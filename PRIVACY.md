@@ -1,6 +1,10 @@
 # Privacy
 
-Claude Status Bar collects no data and has no servers. It runs entirely on your Mac. Its one network call is a once-a-day check to GitHub's public API for the latest release tag, used only to show "Update available" in the menu. Nothing is sent to the developer (as with any update check or download, GitHub sees the request; the developer never does).
+Codex Status Bar runs locally and has no analytics or developer-operated server.
 
----
-Back to the [README](README.md).
+It stores only local session status and a redacted MCP inventory under `~/.codex/statusbar/`.
+MCP transport configuration, URLs, headers, environment values, credentials, tool arguments,
+prompts, command output, and transcript contents are not copied into the status files.
+
+The app makes one direct network request per day to GitHub's public API to check the latest release.
+Codex and configured MCP servers have their own network and privacy behavior outside this app.
