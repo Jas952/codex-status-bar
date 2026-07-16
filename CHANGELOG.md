@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — Distinct chat titles
+
+- Resolve Codex Desktop thread names through the official App Server `thread/list` API.
+- Show the chat title as the primary session label while retaining branch, project, timer, and APP badge.
+- Keep the project and full title available in the row tooltip.
+
 ## 0.1.3 — Accurate resumed-turn timer
 
 - Prevent large rollout files from reusing an ancient session-start timestamp after monitor restart.

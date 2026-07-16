@@ -9,6 +9,7 @@ const readline = require("readline");
 
 const root = path.join(os.homedir(), ".codex", "statusbar");
 const output = path.join(root, "mcp.json");
+const threadsOutput = path.join(root, "threads.json");
 const pidPath = path.join(root, "mcp-monitor.pid");
 function locateCodex() {
   if (process.env.CODEX_BINARY) return process.env.CODEX_BINARY;
@@ -52,6 +53,19 @@ function writeState() {
   const tmp = `${output}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify({ servers: safe, ts: Math.floor(Date.now() / 1000) }));
   fs.renameSync(tmp, output);
+}
+
+function writeThreads(rows) {
+  const threads = (rows || []).flatMap((row) => {
+    const id = String(row.id || "");
+    const fallback = String(row.preview || "").split("\n")[0].replace(/^\/goal\s*/i, "").trim();
+    const name = String(row.name || fallback).trim().slice(0, 160);
+    if (!id || !name) return [];
+    return [{ id, name, cwd: String(row.cwd || ""), updatedAt: Number(row.updatedAt || 0) }];
+  });
+  const tmp = `${threadsOutput}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ threads, ts: Math.floor(Date.now() / 1000) }));
+  fs.renameSync(tmp, threadsOutput);
 }
 
 function loadConfigured() {
@@ -114,9 +128,12 @@ try {
     if (message.id === 1 && message.result) {
       send({ method: "initialized", params: {} });
       send({ method: "mcpServerStatus/list", id: 2, params: { detail: "toolsAndAuthOnly" } });
+      send({ method: "thread/list", id: 3, params: { limit: 200, sortKey: "updated_at", sortDirection: "desc" } });
     } else if (message.id === 2 && message.result) {
       for (const row of message.result.data || []) mergeReady(row);
       writeState();
+    } else if (message.id === 3 && message.result) {
+      writeThreads(message.result.data || []);
     } else if (message.method === "mcpServer/startupStatus/updated") {
       const update = message.params || {};
       const name = String(update.name || "");
@@ -134,9 +151,13 @@ try {
   appServer.on("exit", shutdown);
   send({
     method: "initialize", id: 1,
-    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.3" } },
+    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.4" } },
   });
 } catch { shutdown(); }
+
+setInterval(() => {
+  send({ method: "thread/list", id: 3, params: { limit: 200, sortKey: "updated_at", sortDirection: "desc" } });
+}, 30000).unref();
 
 let misses = 0;
 setInterval(() => {

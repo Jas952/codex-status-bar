@@ -12,6 +12,11 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-bar-ui-test-"))
 const sessions = path.join(home, "sessions", "2026", "07", "16");
 const rollout = path.join(sessions, "rollout-test.jsonl");
 fs.mkdirSync(sessions, { recursive: true });
+fs.mkdirSync(path.join(home, ".codex", "statusbar"), { recursive: true });
+fs.writeFileSync(path.join(home, ".codex", "statusbar", "threads.json"), JSON.stringify({ threads: [
+  { id: "desktop-ui-test", name: "Refactor status menu" },
+  { id: "large-desktop-test", name: "Large rollout task" },
+] }));
 
 const records = [
   { timestamp: new Date().toISOString(), type: "session_meta", payload: {
@@ -46,6 +51,7 @@ assert.strictEqual(state.entrypoint, "codex-app");
 assert.strictEqual(state.pid, 0);
 assert.strictEqual(state.mcpServer, "github");
 assert.strictEqual(state.mcpTool, "search_issues");
+assert.strictEqual(state.chatTitle, "Refactor status menu");
 assert.ok(!JSON.stringify(state).includes("private prompt"));
 
 fs.appendFileSync(rollout, [
@@ -80,6 +86,7 @@ const largeState = JSON.parse(fs.readFileSync(
   path.join(home, ".codex", "statusbar", "state.d", "large-desktop-test.json"), "utf8",
 ));
 assert.strictEqual(largeState.state, "tool");
+assert.strictEqual(largeState.chatTitle, "Large rollout task");
 assert.ok(largeState.startedAt >= Math.floor(Date.parse(recentToolTimestamp) / 1000));
 
 fs.rmSync(home, { recursive: true, force: true });

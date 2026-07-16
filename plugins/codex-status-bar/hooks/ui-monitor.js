@@ -13,8 +13,11 @@ const statusRoot = path.join(home, ".codex", "statusbar");
 const stateDir = path.join(statusRoot, "state.d");
 const pidPath = path.join(statusRoot, "ui-monitor.pid");
 const logPath = path.join(statusRoot, "ui-monitor.log");
+const threadsPath = path.join(statusRoot, "threads.json");
 const once = process.argv.includes("--once");
 const tracked = new Map();
+let threadNames = new Map();
+let threadsMTime = 0;
 let shuttingDown = false;
 
 const safeId = (value) => String(value || "unknown").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 96) || "unknown";
@@ -25,6 +28,16 @@ function writeAtomic(file, value) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, file);
+}
+
+function loadThreadNames() {
+  try {
+    const mtime = fs.statSync(threadsPath).mtimeMs;
+    if (mtime === threadsMTime) return;
+    const data = JSON.parse(fs.readFileSync(threadsPath, "utf8"));
+    threadNames = new Map((data.threads || []).map((row) => [String(row.id), String(row.name || "")]));
+    threadsMTime = mtime;
+  } catch {}
 }
 
 function rolloutFiles(dir, output = []) {
@@ -66,7 +79,7 @@ function blankState(meta) {
   return {
     state: "idle", label: "", tool: "", toolKind: "", mcpServer: "", mcpTool: "",
     activeTools: {}, activeAgents: {}, project: meta.cwd ? path.basename(meta.cwd) : "",
-    cwd: meta.cwd || "", sessionId: meta.sessionId || "", turnId: "", model: meta.model || "",
+    cwd: meta.cwd || "", sessionId: meta.sessionId || "", chatTitle: "", turnId: "", model: meta.model || "",
     permissionMode: "", transcript: meta.file || "", entrypoint: "codex-app", term_program: "",
     pid: 0, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000), lastEvent: "ui-monitor",
   };
@@ -149,6 +162,11 @@ function processFile(file) {
   }
   let changed = false;
   for (const record of records) changed = applyEvent(record, context) || changed;
+  const chatTitle = context.state?.sessionId ? (threadNames.get(String(context.state.sessionId)) || "") : "";
+  if (context.state && chatTitle && context.state.chatTitle !== chatTitle) {
+    context.state.chatTitle = chatTitle;
+    changed = true;
+  }
   context.offset = stat.size;
   tracked.set(file, context);
   const active = context.state && ["thinking", "tool", "permission"].includes(context.state.state);
@@ -159,6 +177,7 @@ function processFile(file) {
 }
 
 function scan() {
+  loadThreadNames();
   for (const file of rolloutFiles(sessionsRoot)) processFile(file);
 }
 

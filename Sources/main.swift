@@ -269,7 +269,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
     struct Session {
-        var id: String, state: String, label: String, project: String, transcript: String
+        var id: String, state: String, label: String, project: String, chatTitle: String, transcript: String
         var tool: String, toolKind: String, mcpServer: String, mcpTool: String
         var model: String, permissionMode: String, turnId: String
         var activeToolCount: Int, activeAgentCount: Int
@@ -289,6 +289,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.state = o["state"] as? String ?? "idle"
             self.label = o["label"] as? String ?? ""
             self.project = o["project"] as? String ?? ""
+            self.chatTitle = o["chatTitle"] as? String ?? ""
             self.transcript = o["transcript"] as? String ?? ""
             self.tool = o["tool"] as? String ?? ""
             self.toolKind = o["toolKind"] as? String ?? ""
@@ -780,6 +781,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         // Truncated rows stay inspectable: full name, branch, and path on hover.
         var tip = sessionName(s)
         if !s.branch.isEmpty { tip += " · " + s.branch }
+        if !s.chatTitle.isEmpty && !s.project.isEmpty { tip += "\nProject: " + s.project }
         if !s.model.isEmpty { tip += "\nModel: " + s.model }
         if !s.mcpServer.isEmpty { tip += "\nMCP: " + s.mcpServer + " / " + s.mcpTool }
         if s.activeAgentCount > 0 { tip += "\nSubagents: \(s.activeAgentCount)" }
@@ -798,6 +800,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Just the repo/cwd (parent-qualified on a name collision); the surface (CLI/APP) renders as a
     // trailing badge instead of inline.
     func sessionName(_ s: Session) -> String {
+        if !s.chatTitle.isEmpty { return s.chatTitle }
         if !s.displayName.isEmpty { return s.displayName }
         return s.project.isEmpty ? "session" : s.project
     }
