@@ -14,7 +14,11 @@ const pidPath = path.join(root, "mcp-monitor.pid");
 function locateCodex() {
   if (process.env.CODEX_BINARY) return process.env.CODEX_BINARY;
   const candidates = [
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex",
+    path.join(os.homedir(), "Applications", "Codex.app", "Contents", "Resources", "codex"),
+    path.join(os.homedir(), "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
     path.join(os.homedir(), ".local", "bin", "codex"),
     path.join(os.homedir(), ".npm-global", "bin", "codex"),
   ];
@@ -121,6 +125,7 @@ try {
 } catch {}
 try {
   appServer = cp.spawn(codex, ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
+  appServer.on("error", shutdown);
   const lines = readline.createInterface({ input: appServer.stdout });
   lines.on("line", (line) => {
     let message;
@@ -158,13 +163,6 @@ try {
 setInterval(() => {
   send({ method: "thread/list", id: 3, params: { limit: 200, sortKey: "updated_at", sortDirection: "desc" } });
 }, 30000).unref();
-
-let misses = 0;
-setInterval(() => {
-  const running = cp.spawnSync("pgrep", ["-f", "CodexStatusBar.app/Contents/MacOS/CodexStatusBar"], { stdio: "ignore" }).status === 0;
-  misses = running ? 0 : misses + 1;
-  if (misses >= 3) shutdown();
-}, 10000).unref();
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
