@@ -332,7 +332,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
     enum AnimStyle: String { case web, code, terminal, crab }
-    enum IconPalette: String { case original, blue, system }
+    enum IconPalette: String { case original, white, blue, system }
     enum CloudMode { case idle, thinking, tool, permission }
     struct SpringChannel {
         var value: CGFloat = 0
@@ -351,7 +351,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
     var animStyle: AnimStyle = .code
     var showTimer = false
-    var iconPalette: IconPalette = .blue
+    var iconPalette: IconPalette = .original
     var cloudMode: CloudMode = .idle
     var cloudActivity = SpringChannel()
     var cloudTool = SpringChannel()
@@ -388,7 +388,13 @@ final class StatusController: NSObject, NSMenuDelegate {
         "Thinking", "Thundering", "Tinkering", "Tomfoolering", "Transfiguring", "Transmuting", "Twisting",
         "Undulating", "Unfurling", "Unravelling", "Vibing", "Waddling", "Wandering", "Warping",
         "Whirlpooling", "Whirring", "Whisking", "Wibbling", "Working", "Wrangling", "Zesting", "Zigzagging"]
-    var iconColor: NSColor? { iconPalette == .system ? nil : brand } // nil => adaptive template
+    var iconColor: NSColor? {
+        switch iconPalette {
+        case .white: return .white
+        case .system: return nil
+        default: return brand
+        }
+    }
     let codeGlyphs = ["›", "»", "·", "»", "›"]
     let codePeaks: [CGFloat] = [1.0, 1.0, 1.0, 1.0, 1.0]
     let codeDip: CGFloat = 0.14 // glyph shrinks to this at each swap
@@ -423,9 +429,13 @@ final class StatusController: NSObject, NSMenuDelegate {
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if let raw = d.string(forKey: "iconPalette"), let palette = IconPalette(rawValue: raw) {
-            iconPalette = palette
+            switch palette {
+            case .original, .white: iconPalette = palette
+            case .blue: iconPalette = .original
+            case .system: iconPalette = .white
+            }
         } else if d.object(forKey: "iconSystem") != nil {
-            iconPalette = d.bool(forKey: "iconSystem") ? .system : .blue
+            iconPalette = d.bool(forKey: "iconSystem") ? .white : .original
         }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
@@ -693,7 +703,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let colorParent = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
         let colorSub = NSMenu()
-        for (palette, name) in [(IconPalette.original, "Original"), (IconPalette.blue, "Blue"), (IconPalette.system, "System")] {
+        for (palette, name) in [(IconPalette.original, "Original"), (IconPalette.white, "System White")] {
             let it = NSMenuItem(title: name, action: #selector(chooseColor(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = palette.rawValue
@@ -980,7 +990,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let raw = sender.representedObject as? String, let palette = IconPalette(rawValue: raw) else { return }
         iconPalette = palette
         UserDefaults.standard.set(raw, forKey: "iconPalette")
-        UserDefaults.standard.set(palette == .system, forKey: "iconSystem") // downgrade compatibility
+        UserDefaults.standard.set(palette == .white || palette == .system,
+                                  forKey: "iconSystem") // downgrade compatibility
         evaluate() // re-render the current state in the new color
     }
 
@@ -1570,8 +1581,12 @@ final class StatusController: NSObject, NSMenuDelegate {
                                        end: CGPoint(x: 9, y: 15), options: [])
             }
         } else {
-            let fill = palette == .system ? cloudColor(0, 0, 0, attention: attention) :
-                cloudColor(0.31, 0.49, 1.0, attention: attention)
+            let fill: CGColor
+            switch palette {
+            case .white: fill = cloudColor(1, 1, 1, attention: attention)
+            case .system: fill = cloudColor(0, 0, 0, attention: attention)
+            default: fill = cloudColor(0.31, 0.49, 1.0, attention: attention)
+            }
             ctx.setFillColor(fill); ctx.fillPath()
         }
         ctx.restoreGState()

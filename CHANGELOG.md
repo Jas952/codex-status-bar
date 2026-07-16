@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 — Original and system white
+
+- Simplify the visible color choices to `Original` and fixed `System White`.
+- Keep the terminal prompt legible as negative space in the white cloud.
+- Migrate the previous blue and adaptive-system settings to the closest new palette.
+
 ## 0.1.7 — Semantic cloud motion
 
 - Replace the cloud's frame sequence with continuously evaluated vector geometry and damped springs.
