@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 — Semantic cloud motion
+
+- Replace the cloud's frame sequence with continuously evaluated vector geometry and damped springs.
+- Give `thinking`, `tool`, `permission`, and `idle` distinct motion targets with uninterrupted transitions.
+- Morph the terminal prompt into an alert mark while the original gradient flows smoothly to amber.
+- Stop the animation clock at rest and decouple text refreshes from geometry updates.
+
 ## 0.1.6 — Original Codex palette
 
 - Add an `Original` color option with the app icon's blue-to-violet cloud gradient and white terminal prompt.

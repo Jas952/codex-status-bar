@@ -333,9 +333,32 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     enum AnimStyle: String { case web, code, terminal, crab }
     enum IconPalette: String { case original, blue, system }
+    enum CloudMode { case idle, thinking, tool, permission }
+    struct SpringChannel {
+        var value: CGFloat = 0
+        var velocity: CGFloat = 0
+
+        mutating func step(toward target: CGFloat, dt: CGFloat) {
+            let stiffness: CGFloat = 96
+            let damping: CGFloat = 17
+            velocity += (stiffness * (target - value) - damping * velocity) * dt
+            value += velocity * dt
+        }
+
+        func settled(at target: CGFloat) -> Bool {
+            abs(value - target) < 0.002 && abs(velocity) < 0.004
+        }
+    }
     var animStyle: AnimStyle = .code
     var showTimer = false
     var iconPalette: IconPalette = .blue
+    var cloudMode: CloudMode = .idle
+    var cloudActivity = SpringChannel()
+    var cloudTool = SpringChannel()
+    var cloudAttention = SpringChannel()
+    var cloudClock: CGFloat = 0
+    var cloudLastTick = Date().timeIntervalSinceReferenceDate
+    var cloudLastTitleSecond = -1
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     // Terminal Glyph's SPINNER_VERBS, minus the hyphenated/tongue-twister ones. Longest kept is ~14 chars
@@ -372,8 +395,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     let codeSub = 18            // sub-frames per glyph (tween smoothness)
     let codeCycle: Double = 3.8 // seconds for the full loop (lower = faster)
     lazy var codeGlyphMasks: [NSImage] = codeGlyphs.map { StatusController.glyphMask($0) }
-    let cloudFrames = 48
-    let cloudCycle: Double = 2.4
+    let cloudFPS: Double = 15
     let crabFPS: Double = 12.5 // matches the source GIF's 0.08s frame delay
     lazy var crabFrames: [NSImage] = StatusController.decodePNGs(clawdCrabFramePNGs)
     // Template frames: bright pixels (white eyes) become transparent holes so they're
@@ -382,7 +404,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var fps: Double {
         switch animStyle {
         case .web: return spriteFPS
-        case .code: return Double(cloudFrames) / cloudCycle
+        case .code: return cloudFPS
         case .terminal: return Double(codeGlyphs.count * codeSub) / codeCycle
         case .crab: return crabFPS
         }
@@ -390,7 +412,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var frameCount: Int {
         switch animStyle {
         case .web: return max(1, frames.count)
-        case .code: return cloudFrames
+        case .code: return 360
         case .terminal: return codeGlyphs.count * codeSub
         case .crab: return max(1, crabFrames.count)
         }
@@ -1246,9 +1268,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
         case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false, startedAt: 0, dot: true)
-        case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true, startedAt: lead.startedAt)
+            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false,
+                   startedAt: 0, dot: true, cloudMode: .permission)
+        case "thinking":
+            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true,
+                   startedAt: lead.startedAt, cloudMode: .thinking)
+        case "tool":
+            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true,
+                   startedAt: lead.startedAt, cloudMode: .tool)
         default:
             renderResting()
         }
@@ -1341,14 +1368,30 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: render
 
-    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, dot: Bool = false) {
+    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double,
+                dot: Bool = false, cloudMode newCloudMode: CloudMode = .idle) {
         guard let button = statusItem.button else { return }
         button.contentTintColor = nil // we paint the icon color ourselves; template-tint is unreliable
         activeBase = label
         activeColor = color
         self.startedAt = startedAt
 
-        if animate {
+        if animStyle == .code {
+            cloudMode = newCloudMode
+            let shouldMove = cloudMode != .idle || !cloudDynamicsSettled()
+            if shouldMove {
+                if animTimer == nil {
+                    cloudLastTick = Date().timeIntervalSinceReferenceDate
+                    let t = Timer(timeInterval: 1.0 / cloudFPS, repeats: true) { [weak self] _ in self?.animStep() }
+                    t.tolerance = 1.0 / (cloudFPS * 5)
+                    RunLoop.main.add(t, forMode: .common)
+                    animTimer = t
+                }
+            } else {
+                animTimer?.invalidate(); animTimer = nil
+                button.image = cloudIcon(color: iconColor)
+            }
+        } else if animate {
             if animTimer == nil {
                 let t = Timer(timeInterval: 1.0 / fps, repeats: true) { [weak self] _ in self?.animStep() }
                 RunLoop.main.add(t, forMode: .common)
@@ -1360,13 +1403,57 @@ final class StatusController: NSObject, NSMenuDelegate {
             button.image = dot ? dotIcon(color: color) : restingIcon(color: color)
         }
         applyTitle()
-        if button.image == nil { button.image = dot ? dotIcon(color: color) : restingIcon(color: color) }
+        if button.image == nil {
+            button.image = animStyle == .code ? cloudIcon(color: iconColor) :
+                (dot ? dotIcon(color: color) : restingIcon(color: color))
+        }
     }
 
     func animStep() {
+        if animStyle == .code {
+            let now = Date().timeIntervalSinceReferenceDate
+            let dt = CGFloat(min(0.05, max(1.0 / 120.0, now - cloudLastTick)))
+            cloudLastTick = now
+            cloudClock += dt
+            stepCloudDynamics(dt: dt)
+            statusItem.button?.image = cloudIcon(color: iconColor)
+            if cloudMode == .idle && cloudDynamicsSettled() {
+                animTimer?.invalidate(); animTimer = nil
+                cloudActivity = SpringChannel(); cloudTool = SpringChannel(); cloudAttention = SpringChannel()
+                statusItem.button?.image = cloudIcon(color: iconColor)
+            }
+            let titleSecond = Int(now)
+            if titleSecond != cloudLastTitleSecond {
+                cloudLastTitleSecond = titleSecond
+                applyTitle()
+            }
+            return
+        }
         frameIdx = (frameIdx + 1) % frameCount
         statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
         applyTitle() // refresh the elapsed clock
+    }
+
+    func cloudTargets() -> (activity: CGFloat, tool: CGFloat, attention: CGFloat) {
+        switch cloudMode {
+        case .idle: return (0, 0, 0)
+        case .thinking: return (0.72, 0, 0)
+        case .tool: return (1, 1, 0)
+        case .permission: return (0.34, 0, 1)
+        }
+    }
+
+    func stepCloudDynamics(dt: CGFloat) {
+        let target = cloudTargets()
+        cloudActivity.step(toward: target.activity, dt: dt)
+        cloudTool.step(toward: target.tool, dt: dt)
+        cloudAttention.step(toward: target.attention, dt: dt)
+    }
+
+    func cloudDynamicsSettled() -> Bool {
+        let target = cloudTargets()
+        return cloudActivity.settled(at: target.activity) &&
+            cloudTool.settled(at: target.tool) && cloudAttention.settled(at: target.attention)
     }
 
     func applyTitle() {
@@ -1400,7 +1487,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func iconImage(color: NSColor?, frame: Int) -> NSImage {
         if animStyle == .web { return tint(frames, color: color, frame: frame) }
         if animStyle == .crab { return crabIcon(color: color, frame: frame) }
-        if animStyle == .code { return cloudIcon(color: color, frame: frame) }
+        if animStyle == .code { return cloudIcon(color: color) }
         let i = (frame / codeSub) % codeGlyphs.count
         let local = (CGFloat(frame % codeSub) + 0.5) / CGFloat(codeSub) // 0…1 within this glyph
         // Scale envelope per glyph: rise, hold at peak, fall, so each lands before the swap.
@@ -1412,83 +1499,102 @@ final class StatusController: NSObject, NSMenuDelegate {
         return codeIcon(color: color, glyph: i, scale: scale)
     }
 
-    // A menu-bar-native interpretation of the Codex app icon: a compact cloud with a
-    // negative-space terminal prompt. During work the lobes breathe in a slow wave and
-    // the cursor changes length; at rest the same silhouette remains completely still.
-    func cloudIcon(color: NSColor?, frame: Int? = nil, attention: Bool = false) -> NSImage {
+    // A continuously evaluated Codex cloud. Spring channels move toward semantic state
+    // targets while time-based waves deform the live geometry; there are no sprite frames.
+    func cloudIcon(color: NSColor?, forcedAttention: CGFloat? = nil) -> NSImage {
         let s: CGFloat = 18
-        let animated = frame != nil
-        let original = iconPalette == .original && color != nil && !attention
-        let phase = CGFloat(frame ?? 0) / CGFloat(cloudFrames) * .pi * 2
+        let clamp: (CGFloat) -> CGFloat = { min(1, max(0, $0)) }
+        let activity = forcedAttention == nil ? clamp(cloudActivity.value) : 0.34
+        let tool = forcedAttention == nil ? clamp(cloudTool.value) : 0
+        let attention = clamp(forcedAttention ?? cloudAttention.value)
+        let time = cloudClock
+        let slowWave = sin(time * 2.7)
+        let toolWave = sin(time * 7.4)
+        let motion = slowWave * (1 - tool) + toolWave * tool
+        let scaleX = 1 + 0.018 * activity * slowWave + 0.055 * tool * toolWave - 0.025 * attention
+        let scaleY = 1 + 0.028 * activity * slowWave - 0.025 * tool * toolWave -
+            0.045 * attention + 0.014 * attention * sin(time * 5.2)
+        let palette = iconPalette
         let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            ctx.saveGState()
-
-            let breath: CGFloat = animated ? 0.975 + 0.025 * (0.5 + 0.5 * sin(phase)) : 1
-            ctx.translateBy(x: s / 2, y: s / 2)
-            ctx.scaleBy(x: breath, y: breath)
-            ctx.translateBy(x: -s / 2, y: -s / 2)
-
-            let base = CGRect(x: 2.0, y: 3.4, width: 14.0, height: 9.0)
-            ctx.addPath(CGPath(roundedRect: base, cornerWidth: 4.4, cornerHeight: 4.4, transform: nil))
-            let lobes: [(CGRect, CGFloat)] = [
-                (CGRect(x: 1.3, y: 6.0, width: 6.3, height: 6.5), 0.0),
-                (CGRect(x: 3.7, y: 8.0, width: 6.6, height: 6.4), 1.1),
-                (CGRect(x: 7.2, y: 8.7, width: 6.3, height: 6.1), 2.2),
-                (CGRect(x: 10.5, y: 6.4, width: 6.2, height: 6.5), 3.3),
-            ]
-            for (rect, offset) in lobes {
-                let wave = animated ? sin(phase + offset) : 0
-                let grow = 0.18 * wave
-                ctx.addEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: 0, dy: 0.08 * wave))
-            }
-            if original {
-                ctx.clip()
-                let colors = [
-                    NSColor(srgbRed: 0.19, green: 0.16, blue: 1.0, alpha: 1).cgColor,
-                    NSColor(srgbRed: 0.30, green: 0.42, blue: 1.0, alpha: 1).cgColor,
-                    NSColor(srgbRed: 0.75, green: 0.59, blue: 1.0, alpha: 1).cgColor,
-                ] as CFArray
-                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.56, 1]) {
-                    ctx.drawLinearGradient(gradient, start: CGPoint(x: 9, y: 3), end: CGPoint(x: 9, y: 15), options: [])
-                }
-            } else {
-                ctx.setFillColor((color ?? .black).cgColor)
-                ctx.fillPath()
-            }
-            ctx.restoreGState()
-
-            // Cut the mark through the cloud. Negative space is sharper than a second color,
-            // and stays legible in both brand-blue and adaptive template modes.
-            ctx.saveGState()
-            ctx.setBlendMode(original ? .normal : .clear)
-            if original { ctx.setStrokeColor(NSColor.white.cgColor); ctx.setFillColor(NSColor.white.cgColor) }
-            ctx.setLineCap(.round)
-            ctx.setLineJoin(.round)
-            if attention {
-                ctx.setLineWidth(1.8)
-                ctx.move(to: CGPoint(x: 9.0, y: 10.8))
-                ctx.addLine(to: CGPoint(x: 9.0, y: 7.7))
-                ctx.strokePath()
-                ctx.fillEllipse(in: CGRect(x: 8.1, y: 5.3, width: 1.8, height: 1.8))
-            } else {
-                ctx.setLineWidth(1.65)
-                ctx.move(to: CGPoint(x: 5.4, y: 10.8))
-                ctx.addLine(to: CGPoint(x: 7.6, y: 8.8))
-                ctx.addLine(to: CGPoint(x: 5.4, y: 6.8))
-                ctx.strokePath()
-                let cursorPulse = animated ? 0.5 + 0.5 * sin(phase * 2.0) : 1
-                let cursorWidth = 1.8 + 1.1 * cursorPulse
-                ctx.setLineWidth(1.65)
-                ctx.move(to: CGPoint(x: 9.5, y: 6.9))
-                ctx.addLine(to: CGPoint(x: 9.5 + cursorWidth, y: 6.9))
-                ctx.strokePath()
-            }
-            ctx.restoreGState()
+            StatusController.drawCloud(context: ctx, palette: palette, time: time,
+                                       activity: activity, tool: tool, attention: attention,
+                                       motion: motion, scaleX: scaleX, scaleY: scaleY)
             return true
         }
-        img.isTemplate = (color == nil)
+        img.isTemplate = iconPalette == .system && attention < 0.015
         return img
+    }
+
+    static func cloudColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, attention: CGFloat) -> CGColor {
+        let ar: CGFloat = 0.95, ag: CGFloat = 0.73, ab: CGFloat = 0.18
+        return NSColor(srgbRed: r + (ar - r) * attention,
+                       green: g + (ag - g) * attention,
+                       blue: b + (ab - b) * attention, alpha: 1).cgColor
+    }
+
+    static func drawCloud(context ctx: CGContext, palette: IconPalette, time: CGFloat,
+                          activity: CGFloat, tool: CGFloat, attention: CGFloat,
+                          motion: CGFloat, scaleX: CGFloat, scaleY: CGFloat) {
+        let original = palette == .original
+        ctx.saveGState()
+        ctx.translateBy(x: 9, y: 9)
+        ctx.scaleBy(x: scaleX, y: scaleY)
+        ctx.translateBy(x: -9, y: -9 + 0.10 * activity * motion)
+
+        let base = CGRect(x: 2.0, y: 3.4, width: 14.0, height: 9.0)
+        ctx.addPath(CGPath(roundedRect: base, cornerWidth: 4.4, cornerHeight: 4.4, transform: nil))
+        let lobes: [(CGRect, CGFloat)] = [
+            (CGRect(x: 1.3, y: 6.0, width: 6.3, height: 6.5), 0.0),
+            (CGRect(x: 3.7, y: 8.0, width: 6.6, height: 6.4), 1.1),
+            (CGRect(x: 7.2, y: 8.7, width: 6.3, height: 6.1), 2.2),
+            (CGRect(x: 10.5, y: 6.4, width: 6.2, height: 6.5), 3.3),
+        ]
+        for (rect, offset) in lobes {
+            let wave = sin(time * (2.7 + 4.5 * tool) + offset * (1 + 0.35 * tool))
+            let grow = (0.10 + 0.20 * tool) * activity * wave + 0.07 * attention * sin(time * 5.2 + offset)
+            let dx = 0.16 * tool * wave
+            let dy = 0.12 * activity * (1 - tool) * wave
+            ctx.addEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: dx, dy: dy))
+        }
+        if original {
+            ctx.clip()
+            let colors = [
+                cloudColor(0.19, 0.16, 1.0, attention: attention),
+                cloudColor(0.30, 0.42, 1.0, attention: attention),
+                cloudColor(0.75, 0.59, 1.0, attention: attention),
+            ] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                         colors: colors, locations: [0, 0.56, 1]) {
+                ctx.drawLinearGradient(gradient, start: CGPoint(x: 9, y: 3),
+                                       end: CGPoint(x: 9, y: 15), options: [])
+            }
+        } else {
+            let fill = palette == .system ? cloudColor(0, 0, 0, attention: attention) :
+                cloudColor(0.31, 0.49, 1.0, attention: attention)
+            ctx.setFillColor(fill); ctx.fillPath()
+        }
+        ctx.restoreGState()
+
+        // The terminal prompt and alert mark cross-fade while sharing the same live cloud.
+        ctx.saveGState()
+        ctx.setBlendMode(original ? .normal : .clear)
+        if original { ctx.setStrokeColor(NSColor.white.cgColor); ctx.setFillColor(NSColor.white.cgColor) }
+        ctx.setLineCap(.round); ctx.setLineJoin(.round)
+        let promptShift = 0.28 * tool * sin(time * 7.8)
+        ctx.setAlpha(1 - attention); ctx.setLineWidth(1.65)
+        ctx.move(to: CGPoint(x: 5.4 + promptShift, y: 10.8))
+        ctx.addLine(to: CGPoint(x: 7.6 + promptShift, y: 8.8))
+        ctx.addLine(to: CGPoint(x: 5.4 + promptShift, y: 6.8)); ctx.strokePath()
+        let cursorPulse = 0.5 + 0.5 * sin(time * (3.2 + 5.0 * tool))
+        let cursorWidth = 1.8 + 1.1 * cursorPulse + 0.45 * tool
+        ctx.move(to: CGPoint(x: 9.5, y: 6.9))
+        ctx.addLine(to: CGPoint(x: 9.5 + cursorWidth, y: 6.9)); ctx.strokePath()
+
+        ctx.setAlpha(attention); ctx.setLineWidth(1.8)
+        ctx.move(to: CGPoint(x: 9.0, y: 10.8)); ctx.addLine(to: CGPoint(x: 9.0, y: 7.7)); ctx.strokePath()
+        ctx.fillEllipse(in: CGRect(x: 8.1, y: 5.3, width: 1.8, height: 1.8))
+        ctx.restoreGState()
     }
 
     // nil color => adaptive template image (system draws it black/white per the menu bar).
@@ -1569,7 +1675,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func dotIcon(color: NSColor?) -> NSImage {
-        cloudIcon(color: color ?? .systemYellow, attention: true)
+        cloudIcon(color: color ?? .systemYellow, forcedAttention: 1)
     }
 
     // Paint `color` through a frame mask's alpha (destinationIn) so frames recolor.
