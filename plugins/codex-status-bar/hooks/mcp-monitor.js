@@ -100,6 +100,12 @@ function shutdown() {
 
 loadConfigured();
 try {
+  const uiMonitor = path.join(__dirname, "ui-monitor.js");
+  if (fs.existsSync(uiMonitor)) {
+    cp.spawn(process.execPath, [uiMonitor], { detached: true, stdio: "ignore" }).unref();
+  }
+} catch {}
+try {
   appServer = cp.spawn(codex, ["app-server"], { stdio: ["pipe", "pipe", "ignore"] });
   const lines = readline.createInterface({ input: appServer.stdout });
   lines.on("line", (line) => {
@@ -128,13 +134,13 @@ try {
   appServer.on("exit", shutdown);
   send({
     method: "initialize", id: 1,
-    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.1" } },
+    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.2" } },
   });
 } catch { shutdown(); }
 
 let misses = 0;
 setInterval(() => {
-  const running = cp.spawnSync("pgrep", ["-x", "CodexStatusBar"], { stdio: "ignore" }).status === 0;
+  const running = cp.spawnSync("pgrep", ["-f", "CodexStatusBar.app/Contents/MacOS/CodexStatusBar"], { stdio: "ignore" }).status === 0;
   misses = running ? 0 : misses + 1;
   if (misses >= 3) shutdown();
 }, 10000).unref();

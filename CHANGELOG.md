@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — Codex Desktop UI monitor
+
+- Add a privacy-limited rollout event monitor for Codex Desktop environments that do not dispatch user hooks.
+- Detect real desktop task, tool, MCP, and completion transitions without persisting prompt or response content.
+- Start the monitor with the menu bar app and keep it alive for continuous updates.
+
 ## 0.1.1 — Codex UI liveness fix
 
 - Keep Codex desktop sessions alive using the desktop app process rather than the short-lived hook runner PID.

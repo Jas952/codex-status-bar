@@ -1,6 +1,6 @@
 {
   "name": "codex-status-bar",
-  "version": "0.1.0",
+  "version": "0.1.2+codex.20260716155122",
   "description": "Live Codex session, approval, tool, subagent, and MCP status in the macOS menu bar.",
   "author": {
     "name": "Jas952",
@@ -9,16 +9,27 @@
   "repository": "https://github.com/Jas952/codex-status-bar",
   "homepage": "https://github.com/Jas952/codex-status-bar",
   "license": "MIT",
-  "keywords": ["codex", "status-bar", "macos", "hooks", "mcp"],
+  "keywords": [
+    "codex",
+    "status-bar",
+    "macos",
+    "hooks",
+    "mcp"
+  ],
   "interface": {
     "displayName": "Codex Status Bar",
     "shortDescription": "See live Codex activity from the menu bar.",
     "longDescription": "Installs local hooks that feed the Codex Status Bar app with session, approval, tool, subagent, and MCP activity.",
     "developerName": "Jas952",
     "category": "Productivity",
-    "capabilities": ["Hooks", "Local status"],
+    "capabilities": [
+      "Hooks",
+      "Local status"
+    ],
     "websiteURL": "https://github.com/Jas952/codex-status-bar",
     "privacyPolicyURL": "https://github.com/Jas952/codex-status-bar/blob/main/PRIVACY.md",
-    "defaultPrompt": ["Show me how Codex Status Bar tracks this task."]
+    "defaultPrompt": [
+      "Show me how Codex Status Bar tracks this task."
+    ]
   }
 }

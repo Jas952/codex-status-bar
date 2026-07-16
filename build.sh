@@ -28,8 +28,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>Codex Status Bar</string>
   <key>CFBundleIdentifier</key><string>com.jas952.codexstatusbar</string>
   <key>CFBundleExecutable</key><string>CodexStatusBar</string>
-  <key>CFBundleVersion</key><string>0.1.1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.1</string>
+  <key>CFBundleVersion</key><string>0.1.2</string>
+  <key>CFBundleShortVersionString</key><string>0.1.2</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
@@ -39,7 +39,7 @@ PLIST
 
 # Bundle the hook scripts so first-launch self-install works.
 mkdir -p "$APP/Contents/Resources"
-cp hooks/update.js hooks/lifecycle.js hooks/mcp-inventory.js hooks/mcp-monitor.js hooks/install.js hooks/uninstall.js "$APP/Contents/Resources/"
+cp hooks/update.js hooks/lifecycle.js hooks/mcp-inventory.js hooks/mcp-monitor.js hooks/ui-monitor.js hooks/install.js hooks/uninstall.js "$APP/Contents/Resources/"
 
 # --- Signing / notarization ---
 # For a clean (no Gatekeeper warning) release you need, set up once on this Mac:

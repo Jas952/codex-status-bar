@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+
+const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const cp = require("child_process");
+
+const repo = path.resolve(__dirname, "..");
+const monitor = path.join(repo, "hooks", "ui-monitor.js");
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-bar-ui-test-"));
+const sessions = path.join(home, "sessions", "2026", "07", "16");
+const rollout = path.join(sessions, "rollout-test.jsonl");
+fs.mkdirSync(sessions, { recursive: true });
+
+const records = [
+  { timestamp: new Date().toISOString(), type: "session_meta", payload: {
+    session_id: "desktop-ui-test", originator: "Codex Desktop", cwd: repo,
+  } },
+  { timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "task_started" } },
+  { timestamp: new Date().toISOString(), type: "turn_context", payload: {
+    turn_id: "turn-ui-test", cwd: repo, model: "gpt-test",
+  } },
+  { timestamp: new Date().toISOString(), type: "event_msg", payload: {
+    type: "user_message", message: "private prompt that must not be persisted",
+  } },
+  { timestamp: new Date().toISOString(), type: "response_item", payload: {
+    type: "custom_tool_call", id: "tool-ui-test", name: "exec",
+    input: JSON.stringify({ code: "await tools.mcp__github__search_issues({})" }),
+  } },
+];
+fs.writeFileSync(rollout, records.map(JSON.stringify).join("\n") + "\n");
+
+function run() {
+  const result = cp.spawnSync(process.execPath, [monitor, "--once"], {
+    env: { ...process.env, HOME: home, CODEX_STATUSBAR_SESSIONS_ROOT: path.join(home, "sessions") },
+    encoding: "utf8",
+  });
+  assert.strictEqual(result.status, 0, result.stderr);
+  return JSON.parse(fs.readFileSync(path.join(home, ".codex", "statusbar", "state.d", "desktop-ui-test.json"), "utf8"));
+}
+
+let state = run();
+assert.strictEqual(state.state, "tool");
+assert.strictEqual(state.entrypoint, "codex-app");
+assert.strictEqual(state.pid, 0);
+assert.strictEqual(state.mcpServer, "github");
+assert.strictEqual(state.mcpTool, "search_issues");
+assert.ok(!JSON.stringify(state).includes("private prompt"));
+
+fs.appendFileSync(rollout, [
+  { timestamp: new Date().toISOString(), type: "response_item", payload: {
+    type: "custom_tool_call_output", call_id: "tool-ui-test",
+  } },
+  { timestamp: new Date().toISOString(), type: "event_msg", payload: { type: "task_complete" } },
+].map(JSON.stringify).join("\n") + "\n");
+state = run();
+assert.strictEqual(state.state, "done");
+assert.deepStrictEqual(state.activeTools, {});
+
+fs.rmSync(home, { recursive: true, force: true });
+console.log("ui-monitor.test.js: ok");

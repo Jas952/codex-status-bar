@@ -255,6 +255,8 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     var pollTimer: Timer?
     var animTimer: Timer?
+    var uiMonitorProcess: Process?
+    var mcpMonitorProcess: Process?
     var frameIdx = 0
 
     let launchedAt = Date()
@@ -404,6 +406,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         pollTimer = t
         tick()
         ensureHooksInstalled()
+        startUIMonitor()
         refreshMCPStatus()
         checkForUpdate()
     }
@@ -1014,14 +1017,33 @@ final class StatusController: NSObject, NSMenuDelegate {
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
+    func startUIMonitor() {
+        let pidPath = (statusRoot as NSString).appendingPathComponent("ui-monitor.pid")
+        if let data = FileManager.default.contents(atPath: pidPath),
+           let text = String(data: data, encoding: .utf8),
+           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           sidecarAlive(pid, marker: "ui-monitor.js") { return }
+        try? FileManager.default.removeItem(atPath: pidPath)
+        guard let script = Bundle.main.path(forResource: "ui-monitor", ofType: "js"),
+              let node = Self.locateNode() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        if (try? process.run()) != nil { uiMonitorProcess = process }
+    }
+
     @objc func refreshMCPStatus() {
         let pidPath = (statusRoot as NSString).appendingPathComponent("mcp-monitor.pid")
         if let data = FileManager.default.contents(atPath: pidPath),
            let text = String(data: data, encoding: .utf8),
-           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pidAlive(pid) {
+           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           sidecarAlive(pid, marker: "mcp-monitor.js") {
             reloadMCPStatus()
             return
         }
+        try? FileManager.default.removeItem(atPath: pidPath)
         if let script = Bundle.main.path(forResource: "mcp-monitor", ofType: "js"),
            let node = Self.locateNode() {
             let process = Process()
@@ -1029,7 +1051,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             process.arguments = [script]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            if (try? process.run()) != nil { return }
+            if (try? process.run()) != nil {
+                mcpMonitorProcess = process
+                return
+            }
         }
         // Fallback for development builds without the bundled monitor.
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -1243,6 +1268,20 @@ final class StatusController: NSObject, NSMenuDelegate {
     func pidAlive(_ pid: Int32) -> Bool {
         if pid <= 0 { return false }
         return kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    func sidecarAlive(_ pid: Int32, marker: String) -> Bool {
+        guard pidAlive(pid) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        let command = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return process.terminationStatus == 0 && command.contains(marker)
     }
 
     // Stay while Codex desktop is open OR a session is active; otherwise quit after a

@@ -41,6 +41,10 @@ The standalone Codex CLI is optional for session tracking. It is currently used 
 sidecar (`codex app-server`), so without a `codex` executable the app still shows desktop task state
 but cannot probe live MCP server health.
 
+When Codex Desktop does not dispatch user hooks, the app starts a local fallback monitor. It reads
+only rollout event types and session metadata needed for status transitions; prompt and response
+content is not copied into status files.
+
 ## Requirements
 
 - macOS 12 or newer;
