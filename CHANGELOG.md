@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 — Codex Cloud icon system
+
+- Replace the generic arrow/dot states with a menu-bar-native Codex cloud and terminal prompt.
+- Animate active work with a restrained lobe-breathing wave and cursor pulse.
+- Show permission requests as the same cloud in amber with a negative-space exclamation mark.
+- Keep the original arrow animation available as `Terminal Pulse`.
+
 ## 0.1.4 — Distinct chat titles
 
 - Resolve Codex Desktop thread names through the official App Server `thread/list` API.

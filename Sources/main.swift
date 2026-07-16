@@ -331,10 +331,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
-    enum AnimStyle: String { case web, code, crab }
+    enum AnimStyle: String { case web, code, terminal, crab }
     var animStyle: AnimStyle = .code
     var showTimer = false
-    var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
+    var iconSystem = false // false = brand Blue; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     // Terminal Glyph's SPINNER_VERBS, minus the hyphenated/tongue-twister ones. Longest kept is ~14 chars
@@ -371,6 +371,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     let codeSub = 18            // sub-frames per glyph (tween smoothness)
     let codeCycle: Double = 3.8 // seconds for the full loop (lower = faster)
     lazy var codeGlyphMasks: [NSImage] = codeGlyphs.map { StatusController.glyphMask($0) }
+    let cloudFrames = 48
+    let cloudCycle: Double = 2.4
     let crabFPS: Double = 12.5 // matches the source GIF's 0.08s frame delay
     lazy var crabFrames: [NSImage] = StatusController.decodePNGs(clawdCrabFramePNGs)
     // Template frames: bright pixels (white eyes) become transparent holes so they're
@@ -379,14 +381,16 @@ final class StatusController: NSObject, NSMenuDelegate {
     var fps: Double {
         switch animStyle {
         case .web: return spriteFPS
-        case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
+        case .code: return Double(cloudFrames) / cloudCycle
+        case .terminal: return Double(codeGlyphs.count * codeSub) / codeCycle
         case .crab: return crabFPS
         }
     }
     var frameCount: Int {
         switch animStyle {
         case .web: return max(1, frames.count)
-        case .code: return codeGlyphs.count * codeSub
+        case .code: return cloudFrames
+        case .terminal: return codeGlyphs.count * codeSub
         case .crab: return max(1, crabFrames.count)
         }
     }
@@ -650,7 +654,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let animParent = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
         let animSub = NSMenu()
-        for (style, name) in [(AnimStyle.code, "Codex Pulse")] {
+        for (style, name) in [(AnimStyle.code, "Codex Cloud"), (AnimStyle.terminal, "Terminal Pulse")] {
             let it = NSMenuItem(title: name, action: #selector(chooseStyle(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = style.rawValue
@@ -1390,6 +1394,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func iconImage(color: NSColor?, frame: Int) -> NSImage {
         if animStyle == .web { return tint(frames, color: color, frame: frame) }
         if animStyle == .crab { return crabIcon(color: color, frame: frame) }
+        if animStyle == .code { return cloudIcon(color: color, frame: frame) }
         let i = (frame / codeSub) % codeGlyphs.count
         let local = (CGFloat(frame % codeSub) + 0.5) / CGFloat(codeSub) // 0…1 within this glyph
         // Scale envelope per glyph: rise, hold at peak, fall, so each lands before the swap.
@@ -1399,6 +1404,72 @@ final class StatusController: NSObject, NSMenuDelegate {
         else { env = 1 }
         let scale = codeDip + (codePeaks[i] - codeDip) * env
         return codeIcon(color: color, glyph: i, scale: scale)
+    }
+
+    // A menu-bar-native interpretation of the Codex app icon: a compact cloud with a
+    // negative-space terminal prompt. During work the lobes breathe in a slow wave and
+    // the cursor changes length; at rest the same silhouette remains completely still.
+    func cloudIcon(color: NSColor?, frame: Int? = nil, attention: Bool = false) -> NSImage {
+        let s: CGFloat = 18
+        let animated = frame != nil
+        let phase = CGFloat(frame ?? 0) / CGFloat(cloudFrames) * .pi * 2
+        let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.saveGState()
+            let fill = color ?? .black
+            ctx.setFillColor(fill.cgColor)
+
+            let breath: CGFloat = animated ? 0.975 + 0.025 * (0.5 + 0.5 * sin(phase)) : 1
+            ctx.translateBy(x: s / 2, y: s / 2)
+            ctx.scaleBy(x: breath, y: breath)
+            ctx.translateBy(x: -s / 2, y: -s / 2)
+
+            let base = CGRect(x: 2.0, y: 3.4, width: 14.0, height: 9.0)
+            ctx.addPath(CGPath(roundedRect: base, cornerWidth: 4.4, cornerHeight: 4.4, transform: nil))
+            ctx.fillPath()
+            let lobes: [(CGRect, CGFloat)] = [
+                (CGRect(x: 1.3, y: 6.0, width: 6.3, height: 6.5), 0.0),
+                (CGRect(x: 3.7, y: 8.0, width: 6.6, height: 6.4), 1.1),
+                (CGRect(x: 7.2, y: 8.7, width: 6.3, height: 6.1), 2.2),
+                (CGRect(x: 10.5, y: 6.4, width: 6.2, height: 6.5), 3.3),
+            ]
+            for (rect, offset) in lobes {
+                let wave = animated ? sin(phase + offset) : 0
+                let grow = 0.18 * wave
+                ctx.fillEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: 0, dy: 0.08 * wave))
+            }
+            ctx.restoreGState()
+
+            // Cut the mark through the cloud. Negative space is sharper than a second color,
+            // and stays legible in both brand-blue and adaptive template modes.
+            ctx.saveGState()
+            ctx.setBlendMode(.clear)
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            if attention {
+                ctx.setLineWidth(1.8)
+                ctx.move(to: CGPoint(x: 9.0, y: 10.8))
+                ctx.addLine(to: CGPoint(x: 9.0, y: 7.7))
+                ctx.strokePath()
+                ctx.fillEllipse(in: CGRect(x: 8.1, y: 5.3, width: 1.8, height: 1.8))
+            } else {
+                ctx.setLineWidth(1.65)
+                ctx.move(to: CGPoint(x: 5.4, y: 10.8))
+                ctx.addLine(to: CGPoint(x: 7.6, y: 8.8))
+                ctx.addLine(to: CGPoint(x: 5.4, y: 6.8))
+                ctx.strokePath()
+                let cursorPulse = animated ? 0.5 + 0.5 * sin(phase * 2.0) : 1
+                let cursorWidth = 1.8 + 1.1 * cursorPulse
+                ctx.setLineWidth(1.65)
+                ctx.move(to: CGPoint(x: 9.5, y: 6.9))
+                ctx.addLine(to: CGPoint(x: 9.5 + cursorWidth, y: 6.9))
+                ctx.strokePath()
+            }
+            ctx.restoreGState()
+            return true
+        }
+        img.isTemplate = (color == nil)
+        return img
     }
 
     // nil color => adaptive template image (system draws it black/white per the menu bar).
@@ -1452,11 +1523,16 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func restingIcon(color: NSColor?) -> NSImage {
-        codeIcon(color: color, glyph: 0, scale: 0.82)
+        switch animStyle {
+        case .code: return cloudIcon(color: color)
+        case .terminal: return codeIcon(color: color, glyph: 0, scale: 0.82)
+        case .web: return tint(frames, color: color, frame: 0)
+        case .crab: return crabIcon(color: color, frame: 0)
+        }
     }
 
     // nil color (System) => adaptive shaded template (see adaptiveCrabFrame in CrabRender.swift);
-    // non-nil (Orange) => the original full-color sprite, drawn as-is.
+    // non-nil (brand mode) => the original full-color sprite, drawn as-is.
     func crabIcon(color: NSColor?, frame: Int) -> NSImage {
         guard !crabFrames.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
         let pool = color == nil ? crabTemplateFrames : crabFrames
@@ -1474,14 +1550,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func dotIcon(color: NSColor?) -> NSImage {
-        let s: CGFloat = 18, d: CGFloat = 9
-        let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
-            (color ?? .systemYellow).setFill()
-            NSBezierPath(ovalIn: NSRect(x: (s - d) / 2, y: (s - d) / 2, width: d, height: d)).fill()
-            return true
-        }
-        img.isTemplate = (color == nil)
-        return img
+        cloudIcon(color: color ?? .systemYellow, attention: true)
     }
 
     // Paint `color` through a frame mask's alpha (destinationIn) so frames recolor.
