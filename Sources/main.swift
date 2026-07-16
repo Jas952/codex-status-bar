@@ -1591,24 +1591,18 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
         ctx.restoreGState()
 
-        // The terminal prompt and alert mark cross-fade while sharing the same live cloud.
+        // Keep the logo mark exact and motionless. Only the surrounding cloud may deform;
+        // this prevents the prompt from becoming an ambiguous vertical stroke mid-transition.
         ctx.saveGState()
         ctx.setBlendMode(original ? .normal : .clear)
         if original { ctx.setStrokeColor(NSColor.white.cgColor); ctx.setFillColor(NSColor.white.cgColor) }
         ctx.setLineCap(.round); ctx.setLineJoin(.round)
-        let promptShift = 0.28 * tool * sin(time * 7.8)
-        ctx.setAlpha(1 - attention); ctx.setLineWidth(1.65)
-        ctx.move(to: CGPoint(x: 5.4 + promptShift, y: 10.8))
-        ctx.addLine(to: CGPoint(x: 7.6 + promptShift, y: 8.8))
-        ctx.addLine(to: CGPoint(x: 5.4 + promptShift, y: 6.8)); ctx.strokePath()
-        let cursorPulse = 0.5 + 0.5 * sin(time * (3.2 + 5.0 * tool))
-        let cursorWidth = 1.8 + 1.1 * cursorPulse + 0.45 * tool
+        ctx.setLineWidth(1.65)
+        ctx.move(to: CGPoint(x: 5.4, y: 10.8))
+        ctx.addLine(to: CGPoint(x: 7.6, y: 8.8))
+        ctx.addLine(to: CGPoint(x: 5.4, y: 6.8)); ctx.strokePath()
         ctx.move(to: CGPoint(x: 9.5, y: 6.9))
-        ctx.addLine(to: CGPoint(x: 9.5 + cursorWidth, y: 6.9)); ctx.strokePath()
-
-        ctx.setAlpha(attention); ctx.setLineWidth(1.8)
-        ctx.move(to: CGPoint(x: 9.0, y: 10.8)); ctx.addLine(to: CGPoint(x: 9.0, y: 7.7)); ctx.strokePath()
-        ctx.fillEllipse(in: CGRect(x: 8.1, y: 5.3, width: 1.8, height: 1.8))
+        ctx.addLine(to: CGPoint(x: 12.4, y: 6.9)); ctx.strokePath()
         ctx.restoreGState()
     }
 

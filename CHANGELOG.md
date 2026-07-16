@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 — Faithful terminal mark
+
+- Keep the `>_` mark fixed and faithful to the original logo in every state.
+- Remove the alert-mark cross-fade and cursor deformation that could resemble a stray vertical line.
+- Continue expressing state through cloud geometry and color only.
+
 ## 0.1.8 — Original and system white
 
 - Simplify the visible color choices to `Original` and fixed `System White`.
