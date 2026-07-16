@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 — Original Codex palette
+
+- Add an `Original` color option with the app icon's blue-to-violet cloud gradient and white terminal prompt.
+- Preserve the existing solid `Blue` and adaptive `System` palettes.
+- Migrate legacy color preferences without resetting existing users.
+
 ## 0.1.5 — Codex Cloud icon system
 
 - Replace the generic arrow/dot states with a menu-bar-native Codex cloud and terminal prompt.

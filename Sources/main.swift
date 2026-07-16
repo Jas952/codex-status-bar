@@ -332,9 +332,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
     enum AnimStyle: String { case web, code, terminal, crab }
+    enum IconPalette: String { case original, blue, system }
     var animStyle: AnimStyle = .code
     var showTimer = false
-    var iconSystem = false // false = brand Blue; true = adaptive black/white (template image)
+    var iconPalette: IconPalette = .blue
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     // Terminal Glyph's SPINNER_VERBS, minus the hyphenated/tongue-twister ones. Longest kept is ~14 chars
@@ -364,7 +365,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         "Thinking", "Thundering", "Tinkering", "Tomfoolering", "Transfiguring", "Transmuting", "Twisting",
         "Undulating", "Unfurling", "Unravelling", "Vibing", "Waddling", "Wandering", "Warping",
         "Whirlpooling", "Whirring", "Whisking", "Wibbling", "Working", "Wrangling", "Zesting", "Zigzagging"]
-    var iconColor: NSColor? { iconSystem ? nil : brand } // nil => render as an adaptive template
+    var iconColor: NSColor? { iconPalette == .system ? nil : brand } // nil => adaptive template
     let codeGlyphs = ["›", "»", "·", "»", "›"]
     let codePeaks: [CGFloat] = [1.0, 1.0, 1.0, 1.0, 1.0]
     let codeDip: CGFloat = 0.14 // glyph shrinks to this at each swap
@@ -399,7 +400,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         super.init()
         let d = UserDefaults.standard
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
-        if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
+        if let raw = d.string(forKey: "iconPalette"), let palette = IconPalette(rawValue: raw) {
+            iconPalette = palette
+        } else if d.object(forKey: "iconSystem") != nil {
+            iconPalette = d.bool(forKey: "iconSystem") ? .system : .blue
+        }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         let menu = NSMenu()
@@ -666,11 +671,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         let colorParent = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
         let colorSub = NSMenu()
-        for (sys, name) in [(false, "Blue"), (true, "System")] {
+        for (palette, name) in [(IconPalette.original, "Original"), (IconPalette.blue, "Blue"), (IconPalette.system, "System")] {
             let it = NSMenuItem(title: name, action: #selector(chooseColor(_:)), keyEquivalent: "")
             it.target = self
-            it.representedObject = sys
-            it.state = iconSystem == sys ? .on : .off
+            it.representedObject = palette.rawValue
+            it.state = iconPalette == palette ? .on : .off
             colorSub.addItem(it)
         }
         colorParent.submenu = colorSub
@@ -950,9 +955,10 @@ final class StatusController: NSObject, NSMenuDelegate {
 
 
     @objc func chooseColor(_ sender: NSMenuItem) {
-        guard let sys = sender.representedObject as? Bool else { return }
-        iconSystem = sys
-        UserDefaults.standard.set(iconSystem, forKey: "iconSystem")
+        guard let raw = sender.representedObject as? String, let palette = IconPalette(rawValue: raw) else { return }
+        iconPalette = palette
+        UserDefaults.standard.set(raw, forKey: "iconPalette")
+        UserDefaults.standard.set(palette == .system, forKey: "iconSystem") // downgrade compatibility
         evaluate() // re-render the current state in the new color
     }
 
@@ -1412,12 +1418,11 @@ final class StatusController: NSObject, NSMenuDelegate {
     func cloudIcon(color: NSColor?, frame: Int? = nil, attention: Bool = false) -> NSImage {
         let s: CGFloat = 18
         let animated = frame != nil
+        let original = iconPalette == .original && color != nil && !attention
         let phase = CGFloat(frame ?? 0) / CGFloat(cloudFrames) * .pi * 2
         let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.saveGState()
-            let fill = color ?? .black
-            ctx.setFillColor(fill.cgColor)
 
             let breath: CGFloat = animated ? 0.975 + 0.025 * (0.5 + 0.5 * sin(phase)) : 1
             ctx.translateBy(x: s / 2, y: s / 2)
@@ -1426,7 +1431,6 @@ final class StatusController: NSObject, NSMenuDelegate {
 
             let base = CGRect(x: 2.0, y: 3.4, width: 14.0, height: 9.0)
             ctx.addPath(CGPath(roundedRect: base, cornerWidth: 4.4, cornerHeight: 4.4, transform: nil))
-            ctx.fillPath()
             let lobes: [(CGRect, CGFloat)] = [
                 (CGRect(x: 1.3, y: 6.0, width: 6.3, height: 6.5), 0.0),
                 (CGRect(x: 3.7, y: 8.0, width: 6.6, height: 6.4), 1.1),
@@ -1436,14 +1440,29 @@ final class StatusController: NSObject, NSMenuDelegate {
             for (rect, offset) in lobes {
                 let wave = animated ? sin(phase + offset) : 0
                 let grow = 0.18 * wave
-                ctx.fillEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: 0, dy: 0.08 * wave))
+                ctx.addEllipse(in: rect.insetBy(dx: -grow, dy: -grow).offsetBy(dx: 0, dy: 0.08 * wave))
+            }
+            if original {
+                ctx.clip()
+                let colors = [
+                    NSColor(srgbRed: 0.19, green: 0.16, blue: 1.0, alpha: 1).cgColor,
+                    NSColor(srgbRed: 0.30, green: 0.42, blue: 1.0, alpha: 1).cgColor,
+                    NSColor(srgbRed: 0.75, green: 0.59, blue: 1.0, alpha: 1).cgColor,
+                ] as CFArray
+                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.56, 1]) {
+                    ctx.drawLinearGradient(gradient, start: CGPoint(x: 9, y: 3), end: CGPoint(x: 9, y: 15), options: [])
+                }
+            } else {
+                ctx.setFillColor((color ?? .black).cgColor)
+                ctx.fillPath()
             }
             ctx.restoreGState()
 
             // Cut the mark through the cloud. Negative space is sharper than a second color,
             // and stays legible in both brand-blue and adaptive template modes.
             ctx.saveGState()
-            ctx.setBlendMode(.clear)
+            ctx.setBlendMode(original ? .normal : .clear)
+            if original { ctx.setStrokeColor(NSColor.white.cgColor); ctx.setFillColor(NSColor.white.cgColor) }
             ctx.setLineCap(.round)
             ctx.setLineJoin(.round)
             if attention {
