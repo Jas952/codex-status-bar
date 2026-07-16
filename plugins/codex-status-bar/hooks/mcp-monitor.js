@@ -134,7 +134,7 @@ try {
   appServer.on("exit", shutdown);
   send({
     method: "initialize", id: 1,
-    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.2" } },
+    params: { clientInfo: { name: "codex_status_bar", title: "Codex Status Bar", version: "0.1.3" } },
   });
 } catch { shutdown(); }
 

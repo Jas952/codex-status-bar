@@ -133,7 +133,11 @@ function processFile(file) {
     const fd = fs.openSync(file, "r");
     const headBuffer = Buffer.alloc(Math.min(stat.size, 131072));
     fs.readSync(fd, headBuffer, 0, headBuffer.length, 0);
-    for (const record of parseLines(headBuffer.toString("utf8"))) applyEvent(record, context);
+    // The head is only for stable session metadata. Replaying an ancient task_started here can
+    // produce a multi-day timer when a long current turn began before the 1 MiB tail window.
+    for (const record of parseLines(headBuffer.toString("utf8"))) {
+      if (record.type === "session_meta") applyEvent(record, context);
+    }
     const buffer = Buffer.alloc(stat.size - start);
     fs.readSync(fd, buffer, 0, buffer.length, start); fs.closeSync(fd);
     records = parseLines(buffer.toString("utf8"), start > 0);

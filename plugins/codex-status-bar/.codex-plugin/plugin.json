@@ -1,6 +1,6 @@
 {
   "name": "codex-status-bar",
-  "version": "0.1.2+codex.20260716155122",
+  "version": "0.1.3+codex.20260716155738",
   "description": "Live Codex session, approval, tool, subagent, and MCP status in the macOS menu bar.",
   "author": {
     "name": "Jas952",

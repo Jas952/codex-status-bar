@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 — Accurate resumed-turn timer
+
+- Prevent large rollout files from reusing an ancient session-start timestamp after monitor restart.
+- Fall back to the first recent tool event when the active turn start is outside the tail window.
+
 ## 0.1.2 — Codex Desktop UI monitor
 
 - Add a privacy-limited rollout event monitor for Codex Desktop environments that do not dispatch user hooks.

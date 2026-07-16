@@ -58,5 +58,29 @@ state = run();
 assert.strictEqual(state.state, "done");
 assert.deepStrictEqual(state.activeTools, {});
 
+// A large active rollout may have its current task_started outside the 1 MiB tail. The monitor
+// must not reuse an ancient task_started from the file head and display a multi-day timer.
+const largeRollout = path.join(sessions, "rollout-large-test.jsonl");
+const recentToolTimestamp = new Date().toISOString();
+fs.writeFileSync(largeRollout, [
+  JSON.stringify({ timestamp: "2020-01-01T00:00:00Z", type: "session_meta", payload: {
+    session_id: "large-desktop-test", originator: "Codex Desktop", cwd: repo,
+  } }),
+  JSON.stringify({ timestamp: "2020-01-01T00:00:01Z", type: "event_msg", payload: { type: "task_started" } }),
+  JSON.stringify({ timestamp: "2020-01-01T00:00:02Z", type: "response_item", payload: {
+    type: "reasoning", encrypted_content: "x".repeat(1_100_000),
+  } }),
+  JSON.stringify({ timestamp: recentToolTimestamp, type: "response_item", payload: {
+    type: "custom_tool_call", id: "large-tool", name: "exec",
+    input: JSON.stringify({ code: "await tools.exec_command({})" }),
+  } }),
+].join("\n") + "\n");
+run();
+const largeState = JSON.parse(fs.readFileSync(
+  path.join(home, ".codex", "statusbar", "state.d", "large-desktop-test.json"), "utf8",
+));
+assert.strictEqual(largeState.state, "tool");
+assert.ok(largeState.startedAt >= Math.floor(Date.parse(recentToolTimestamp) / 1000));
+
 fs.rmSync(home, { recursive: true, force: true });
 console.log("ui-monitor.test.js: ok");
