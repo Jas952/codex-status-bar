@@ -1,9 +1,8 @@
 import Cocoa
 import QuartzCore
 
-/// A hover-revealed status capsule that visually grows from the physical camera cutout. At rest the
-/// black shape matches the notch exactly; active work is communicated by a restrained lower-edge
-/// breath, and the icon/status appear only after the pointer reveals the control.
+/// A hover-revealed status surface that grows from the physical camera cutout. The window itself
+/// never animates frame-by-frame: Core Animation morphs the notch silhouette and its lower contour.
 final class NotchHUDController: NSObject {
     enum Activity { case idle, active, permission }
 
@@ -27,15 +26,11 @@ final class NotchHUDController: NSObject {
         super.init()
 
         hudView.onClick = { [weak self] event, view in self?.onClick(event, view) }
-        hudView.onHoverChanged = { [weak self] hovering in
-            guard let self, hovering != self.isHovered else { return }
-            self.isHovered = hovering
-            self.layoutPanel(animated: true)
-        }
+        hudView.onHoverChanged = { [weak self] hovering in self?.setHovered(hovering) }
         panel.contentView = hudView
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = false // the shape layer owns a contour shadow; never shadow the window rectangle
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = false
@@ -61,7 +56,8 @@ final class NotchHUDController: NSObject {
     func show(animated: Bool) {
         isPresented = true
         isHovered = false
-        layoutPanel(animated: false)
+        layoutPanel(expanded: false)
+        hudView.setExpanded(false, animated: false)
         if animated && !reduceMotion {
             panel.alphaValue = 0
             panel.orderFrontRegardless()
@@ -78,7 +74,7 @@ final class NotchHUDController: NSObject {
     func hide(animated: Bool) {
         isPresented = false
         isHovered = false
-        hudView.stopPulse()
+        hudView.stopMotion()
         guard animated && !reduceMotion else { panel.orderOut(nil); return }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.14
@@ -90,21 +86,37 @@ final class NotchHUDController: NSObject {
     }
 
     func update(image: NSImage?, text: String, activity: Activity, animated: Bool = true) {
-        let textChanged = text != currentText
         currentText = text
         currentActivity = activity
         hudView.update(image: image, text: text, activity: activity, reduceMotion: reduceMotion)
-        // Collapsed geometry is deliberately stable; status changes alter only the subtle breath.
-        if isPresented && isHovered && textChanged { layoutPanel(animated: animated) }
+    }
+
+    private func setHovered(_ hovering: Bool) {
+        guard hovering != isHovered, isPresented else { return }
+        isHovered = hovering
+        if hovering {
+            // Resize the transparent window once, then let Core Animation perform every visible frame.
+            layoutPanel(expanded: true)
+            hudView.setExpanded(true, animated: true)
+        } else {
+            hudView.setExpanded(false, animated: true) { [weak self] in
+                guard let self, !self.isHovered, self.isPresented else { return }
+                self.layoutPanel(expanded: false)
+            }
+        }
     }
 
     @objc private func screenGeometryChanged() {
-        if isPresented { layoutPanel(animated: true) }
+        guard isPresented else { return }
+        layoutPanel(expanded: isHovered)
+        hudView.setExpanded(isHovered, animated: false)
     }
 
     @objc private func accessibilityDisplayChanged() {
         hudView.update(image: nil, text: currentText, activity: currentActivity, reduceMotion: reduceMotion)
-        if isPresented { layoutPanel(animated: false) }
+        guard isPresented else { return }
+        layoutPanel(expanded: isHovered)
+        hudView.setExpanded(isHovered, animated: false)
     }
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -119,21 +131,15 @@ final class NotchHUDController: NSObject {
         return max(0, right.minX - left.maxX)
     }
 
-    private func layoutPanel(animated: Bool) {
+    private func layoutPanel(expanded: Bool) {
         guard let screen = targetScreen() else { return }
         let physicalNotchWidth = notchWidth(on: screen)
         let hasNotch = physicalNotchWidth > 0 && screen.safeAreaInsets.top > 0
         let baseWidth = hasNotch ? physicalNotchWidth : 176
         let bodyHeight = hasNotch ? screen.safeAreaInsets.top : 24
-        let hitSlop: CGFloat = 10
-
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
-        let textWidth = currentText.isEmpty ? 0 : ceil(
-            (currentText as NSString).size(withAttributes: [.font: font]).width
-        )
-        let expandedWidth = min(440, max(baseWidth + 34, textWidth + 180))
-        let targetWidth = isHovered ? expandedWidth : baseWidth + hitSlop * 2
-        let targetHeight = isHovered ? bodyHeight + 34 : bodyHeight + hitSlop
+        let hitSlop: CGFloat = 12
+        let targetWidth = expanded ? 440 : baseWidth + hitSlop * 2
+        let targetHeight = expanded ? bodyHeight + 36 : bodyHeight + hitSlop
         let target = NSRect(
             x: round(screen.frame.midX - targetWidth / 2),
             y: screen.frame.maxY - targetHeight,
@@ -141,25 +147,16 @@ final class NotchHUDController: NSObject {
             height: targetHeight
         )
 
+        // NSWindow frame animation was the source of visible stalls when the timer refreshed.
+        panel.setFrame(target, display: true)
         hudView.configure(
             hasPhysicalNotch: hasNotch,
             notchWidth: baseWidth,
             bodyHeight: bodyHeight,
             hitSlop: hitSlop,
-            expanded: isHovered,
             reduceMotion: reduceMotion
         )
-
-        let shouldAnimate = animated && panel.isVisible && !reduceMotion
-        if shouldAnimate {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = isHovered ? 0.24 : 0.20
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: true)
-        }
+        hudView.layoutSubtreeIfNeeded()
     }
 }
 
@@ -168,25 +165,44 @@ private final class NotchHUDView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
 
     private let shapeLayer = CAShapeLayer()
+    private let auraLayer = CAShapeLayer()
+    private let shimmerLayer = CAGradientLayer()
+    private let shimmerMask = CAShapeLayer()
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private var tracking: NSTrackingArea?
     private var hasPhysicalNotch = true
     private var physicalNotchWidth: CGFloat = 220
     private var bodyHeight: CGFloat = 38
-    private var hitSlop: CGFloat = 10
+    private var hitSlop: CGFloat = 12
     private var expanded = false
     private var reduceMotion = false
     private var activity: NotchHUDController.Activity = .idle
     private var pulseIsRunning = false
+    private var transitionGeneration = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.addSublayer(shapeLayer)
+
         shapeLayer.fillColor = NSColor.black.cgColor
-        shapeLayer.shadowOffset = CGSize(width: 0, height: -1)
-        shapeLayer.shadowRadius = 6
+        layer?.addSublayer(shapeLayer)
+
+        auraLayer.fillColor = NSColor.clear.cgColor
+        auraLayer.lineCap = .round
+        auraLayer.lineWidth = 1.4
+        auraLayer.shadowOffset = .zero
+        auraLayer.shadowRadius = 7
+        layer?.addSublayer(auraLayer)
+
+        shimmerLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        shimmerLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        shimmerLayer.mask = shimmerMask
+        shimmerMask.fillColor = NSColor.clear.cgColor
+        shimmerMask.strokeColor = NSColor.white.cgColor
+        shimmerMask.lineCap = .round
+        shimmerMask.lineWidth = 1.25
+        layer?.addSublayer(shimmerLayer)
 
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.animates = true
@@ -211,44 +227,84 @@ private final class NotchHUDView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     func configure(hasPhysicalNotch: Bool, notchWidth: CGFloat, bodyHeight: CGFloat,
-                   hitSlop: CGFloat, expanded: Bool, reduceMotion: Bool) {
+                   hitSlop: CGFloat, reduceMotion: Bool) {
         self.hasPhysicalNotch = hasPhysicalNotch
         physicalNotchWidth = notchWidth
         self.bodyHeight = bodyHeight
         self.hitSlop = hitSlop
-        self.expanded = expanded
         self.reduceMotion = reduceMotion
-        updateContentVisibility(animated: window?.isVisible == true)
         needsLayout = true
     }
 
     func update(image: NSImage?, text: String, activity: NotchHUDController.Activity, reduceMotion: Bool) {
         if let image { iconView.image = image }
         label.stringValue = text
-        if self.activity != activity { stopPulse() }
+        let stateChanged = self.activity != activity || self.reduceMotion != reduceMotion
         self.activity = activity
         self.reduceMotion = reduceMotion
         updateAccent()
-        syncPulse()
+        if stateChanged { stopMotion() }
+        syncMotion()
         needsLayout = true
     }
 
-    func stopPulse() {
+    func setExpanded(_ value: Bool, animated: Bool, completion: (() -> Void)? = nil) {
+        transitionGeneration += 1
+        let generation = transitionGeneration
+        let fromShape = shapeLayer.presentation()?.path ?? shapeLayer.path
+        let fromContour = auraLayer.presentation()?.path ?? auraLayer.path
+        expanded = value
+        stopMotion()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+
+        let targetShape = shapePath(expanded: value, amount: restingAmount)
+        let targetContour = contourPath(expanded: value, amount: restingAmount)
+        setModelPaths(shape: targetShape, contour: targetContour)
+        updateContentVisibility(animated: animated)
+
+        guard animated && !reduceMotion, let fromShape, let fromContour else {
+            syncMotion()
+            completion?()
+            return
+        }
+
+        let duration = value ? 0.42 : 0.36
+        let curve = CAMediaTimingFunction(controlPoints: 0.22, 0.78, 0.28, 1)
+        addPathTransition(to: shapeLayer, from: fromShape, to: targetShape, duration: duration, curve: curve)
+        addPathTransition(to: auraLayer, from: fromContour, to: targetContour, duration: duration, curve: curve)
+        addPathTransition(to: shimmerMask, from: fromContour, to: targetContour, duration: duration, curve: curve)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self, generation == self.transitionGeneration else { return }
+            self.syncMotion()
+            completion?()
+        }
+    }
+
+    func stopMotion() {
         pulseIsRunning = false
         shapeLayer.removeAnimation(forKey: "notchBreath")
-        shapeLayer.removeAnimation(forKey: "notchGlow")
+        auraLayer.removeAnimation(forKey: "notchBreath")
+        shimmerMask.removeAnimation(forKey: "notchBreath")
+        shimmerLayer.removeAnimation(forKey: "notchShimmer")
     }
 
     override func layout() {
         super.layout()
         shapeLayer.frame = bounds
-        updateShape()
+        auraLayer.frame = bounds
+        shimmerLayer.frame = bounds
+        shimmerMask.frame = bounds
 
-        let visibleBandHeight: CGFloat = expanded ? 34 : 0
-        let band = NSRect(x: 0, y: 0, width: bounds.width, height: visibleBandHeight)
+        let shape = shapePath(expanded: expanded, amount: restingAmount)
+        let contour = contourPath(expanded: expanded, amount: restingAmount)
+        setModelPaths(shape: shape, contour: contour)
+
+        let band = NSRect(x: 0, y: 2, width: bounds.width, height: expanded ? 34 : 0)
         let iconSize: CGFloat = 22
         let gap: CGFloat = label.stringValue.isEmpty ? 0 : 7
-        let available = bounds.width - iconSize - gap - 28
+        let available = max(0, bounds.width - iconSize - gap - 28)
         let natural = label.stringValue.isEmpty ? 0 : ceil(
             (label.stringValue as NSString).size(withAttributes: [.font: label.font as Any]).width
         ) + 28
@@ -280,6 +336,11 @@ private final class NotchHUDView: NSView {
     override func mouseExited(with event: NSEvent) { onHoverChanged?(false) }
     override func mouseDown(with event: NSEvent) { onClick?(event, self) }
 
+    private var restingAmount: CGFloat {
+        guard !expanded, activity != .idle else { return 0 }
+        return reduceMotion ? 2.5 : 1.5
+    }
+
     private func updateContentVisibility(animated: Bool) {
         let alpha: CGFloat = expanded ? 1 : 0
         guard animated && !reduceMotion else {
@@ -288,102 +349,175 @@ private final class NotchHUDView: NSView {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = expanded ? 0.16 : 0.10
+            context.duration = expanded ? 0.24 : 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             iconView.animator().alphaValue = alpha
             label.animator().alphaValue = alpha
         }
     }
 
     private func updateAccent() {
-        let accent: NSColor
+        let leading: NSColor
+        let highlight: NSColor
         switch activity {
-        case .permission: accent = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
-        case .active: accent = NSColor(srgbRed: 0.42, green: 0.51, blue: 1, alpha: 1)
-        case .idle: accent = .clear
+        case .permission:
+            leading = NSColor(srgbRed: 1, green: 0.62, blue: 0.12, alpha: 1)
+            highlight = NSColor(srgbRed: 1, green: 0.88, blue: 0.43, alpha: 1)
+        case .active:
+            leading = NSColor(srgbRed: 0.32, green: 0.62, blue: 1, alpha: 1)
+            highlight = NSColor(srgbRed: 0.65, green: 0.42, blue: 1, alpha: 1)
+        case .idle:
+            leading = .clear
+            highlight = .clear
         }
-        shapeLayer.shadowColor = accent.cgColor
-        shapeLayer.shadowOpacity = activity == .idle ? 0 : (reduceMotion ? 0.15 : 0.12)
+
+        auraLayer.strokeColor = leading.withAlphaComponent(activity == .idle ? 0 : 0.34).cgColor
+        auraLayer.shadowColor = leading.cgColor
+        auraLayer.shadowOpacity = activity == .idle ? 0 : (reduceMotion ? 0.18 : 0.42)
+        shimmerLayer.colors = [
+            leading.withAlphaComponent(0).cgColor,
+            leading.withAlphaComponent(0.28).cgColor,
+            highlight.withAlphaComponent(0.95).cgColor,
+            leading.withAlphaComponent(0.18).cgColor,
+            leading.withAlphaComponent(0).cgColor
+        ]
+        shimmerLayer.locations = [0, 0.32, 0.5, 0.68, 1]
+        shimmerLayer.opacity = activity == .idle ? 0 : 1
     }
 
-    private func updateShape() {
-        let path: CGPath
-        if expanded {
-            path = bottomRoundedPath(in: bounds, radius: hasPhysicalNotch ? 16 : 17)
-        } else {
-            path = collapsedPath(extension: activity == .idle ? 0 : (reduceMotion ? 3 : 2))
-        }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        shapeLayer.path = path
-        shapeLayer.shadowPath = path
-        CATransaction.commit()
-        syncPulse()
-    }
-
-    private func syncPulse() {
+    private func syncMotion() {
         let shouldPulse = !expanded && activity != .idle && !reduceMotion && bounds.width > 0
         if !shouldPulse {
-            stopPulse()
-            if bounds.width > 0 { updateStaticShape() }
+            pulseIsRunning = false
             return
         }
         guard !pulseIsRunning else { return }
         pulseIsRunning = true
 
-        let pathAnimation = CABasicAnimation(keyPath: "path")
-        pathAnimation.fromValue = collapsedPath(extension: 2)
-        pathAnimation.toValue = collapsedPath(extension: 6)
-        pathAnimation.duration = activity == .permission ? 1.05 : 1.35
-        pathAnimation.autoreverses = true
-        pathAnimation.repeatCount = .infinity
-        pathAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        shapeLayer.add(pathAnimation, forKey: "notchBreath")
+        let low: CGFloat = 1.5
+        let high: CGFloat = activity == .permission ? 5.2 : 4.6
+        let shapeValues = [
+            shapePath(expanded: false, amount: low),
+            shapePath(expanded: false, amount: high),
+            shapePath(expanded: false, amount: low)
+        ]
+        let contourValues = [
+            contourPath(expanded: false, amount: low),
+            contourPath(expanded: false, amount: high),
+            contourPath(expanded: false, amount: low)
+        ]
+        let duration = activity == .permission ? 1.75 : 2.25
+        addBreath(to: shapeLayer, values: shapeValues, duration: duration)
+        addBreath(to: auraLayer, values: contourValues, duration: duration)
+        addBreath(to: shimmerMask, values: contourValues, duration: duration)
 
-        let glow = CABasicAnimation(keyPath: "shadowOpacity")
-        glow.fromValue = activity == .permission ? 0.16 : 0.08
-        glow.toValue = activity == .permission ? 0.32 : 0.20
-        glow.duration = pathAnimation.duration
-        glow.autoreverses = true
-        glow.repeatCount = .infinity
-        glow.timingFunction = pathAnimation.timingFunction
-        shapeLayer.add(glow, forKey: "notchGlow")
+        let shimmer = CABasicAnimation(keyPath: "locations")
+        shimmer.fromValue = [-0.65, -0.42, -0.2, 0.02, 0.25]
+        shimmer.toValue = [0.75, 0.98, 1.2, 1.42, 1.65]
+        shimmer.duration = activity == .permission ? 2.1 : 3.1
+        shimmer.repeatCount = .infinity
+        shimmer.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        shimmerLayer.add(shimmer, forKey: "notchShimmer")
     }
 
-    private func updateStaticShape() {
-        let path = expanded
-            ? bottomRoundedPath(in: bounds, radius: hasPhysicalNotch ? 16 : 17)
-            : collapsedPath(extension: activity == .idle ? 0 : (reduceMotion ? 3 : 2))
+    private func addBreath(to layer: CALayer, values: [CGPath], duration: CFTimeInterval) {
+        let animation = CAKeyframeAnimation(keyPath: "path")
+        animation.values = values
+        animation.keyTimes = [0, 0.5, 1]
+        animation.timingFunctions = [
+            CAMediaTimingFunction(controlPoints: 0.45, 0, 0.25, 1),
+            CAMediaTimingFunction(controlPoints: 0.45, 0, 0.25, 1)
+        ]
+        animation.duration = duration
+        animation.repeatCount = .infinity
+        layer.add(animation, forKey: "notchBreath")
+    }
+
+    private func addPathTransition(to layer: CALayer, from: CGPath, to: CGPath,
+                                   duration: CFTimeInterval, curve: CAMediaTimingFunction) {
+        let animation = CABasicAnimation(keyPath: "path")
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = duration
+        animation.timingFunction = curve
+        layer.add(animation, forKey: "notchTransition")
+    }
+
+    private func setModelPaths(shape: CGPath, contour: CGPath) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shapeLayer.path = path
-        shapeLayer.shadowPath = path
+        shapeLayer.path = shape
+        auraLayer.path = contour
+        auraLayer.shadowPath = contour
+        shimmerMask.path = contour
         CATransaction.commit()
     }
 
-    private func collapsedPath(extension amount: CGFloat) -> CGPath {
-        let width = min(physicalNotchWidth, bounds.width)
-        let x = round(bounds.midX - width / 2)
-        let rect = NSRect(
-            x: x,
-            y: max(0, bounds.height - bodyHeight - amount),
-            width: width,
-            height: bodyHeight + amount
+    /// Uses the same command topology for collapsed and expanded shapes so Core Animation can
+    /// interpolate the contour without dropping a frame or flashing a rectangular backing layer.
+    private func shapePath(expanded: Bool, amount: CGFloat) -> CGPath {
+        let width = expanded ? max(0, bounds.width - 4) : min(physicalNotchWidth, bounds.width)
+        let left = round(bounds.midX - width / 2)
+        let right = left + width
+        let top = bounds.maxY
+        let base = expanded ? 2 : max(2, bounds.maxY - bodyHeight)
+        let radius: CGFloat = expanded ? 16 : (hasPhysicalNotch ? 12 : 14)
+        let center = (left + right) / 2
+
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: left, y: top))
+        path.addLine(to: CGPoint(x: right, y: top))
+        path.addLine(to: CGPoint(x: right, y: base + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: right - radius, y: base),
+            control: CGPoint(x: right, y: base)
         )
-        return bottomRoundedPath(in: rect, radius: hasPhysicalNotch ? 12 : 14)
+        path.addCurve(
+            to: CGPoint(x: center, y: base - amount),
+            control1: CGPoint(x: right - width * 0.22, y: base),
+            control2: CGPoint(x: center + width * 0.18, y: base - amount)
+        )
+        path.addCurve(
+            to: CGPoint(x: left + radius, y: base),
+            control1: CGPoint(x: center - width * 0.18, y: base - amount),
+            control2: CGPoint(x: left + width * 0.22, y: base)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: left, y: base + radius),
+            control: CGPoint(x: left, y: base)
+        )
+        path.closeSubpath()
+        return path
     }
 
-    private func bottomRoundedPath(in rect: NSRect, radius: CGFloat) -> CGPath {
-        let r = min(radius, rect.width / 2, rect.height / 2)
+    private func contourPath(expanded: Bool, amount: CGFloat) -> CGPath {
+        let width = expanded ? max(0, bounds.width - 4) : min(physicalNotchWidth, bounds.width)
+        let left = round(bounds.midX - width / 2)
+        let right = left + width
+        let base = expanded ? 2 : max(2, bounds.maxY - bodyHeight)
+        let radius: CGFloat = expanded ? 16 : (hasPhysicalNotch ? 12 : 14)
+        let center = (left + right) / 2
+
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + r))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.minY),
-                          control: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
-        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.minY + r),
-                          control: CGPoint(x: rect.minX, y: rect.minY))
-        path.closeSubpath()
+        path.move(to: CGPoint(x: left, y: base + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: left + radius, y: base),
+            control: CGPoint(x: left, y: base)
+        )
+        path.addCurve(
+            to: CGPoint(x: center, y: base - amount),
+            control1: CGPoint(x: left + width * 0.22, y: base),
+            control2: CGPoint(x: center - width * 0.18, y: base - amount)
+        )
+        path.addCurve(
+            to: CGPoint(x: right - radius, y: base),
+            control1: CGPoint(x: center + width * 0.18, y: base - amount),
+            control2: CGPoint(x: right - width * 0.22, y: base)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: right, y: base + radius),
+            control: CGPoint(x: right, y: base)
+        )
         return path
     }
 }
