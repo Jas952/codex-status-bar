@@ -95,7 +95,8 @@ final class NotchHUDController: NSObject {
         guard hovering != isHovered, isPresented else { return }
         isHovered = hovering
         if hovering {
-            // Resize the transparent window once, then let Core Animation perform every visible frame.
+            // Stop animations expressed in the narrow window's coordinates before widening it.
+            hudView.prepareForWindowResize()
             layoutPanel(expanded: true)
             hudView.setExpanded(true, animated: true)
         } else {
@@ -138,8 +139,8 @@ final class NotchHUDController: NSObject {
         let baseWidth = hasNotch ? physicalNotchWidth : 176
         let bodyHeight = hasNotch ? screen.safeAreaInsets.top : 24
         let hitSlop: CGFloat = 12
-        let targetWidth = expanded ? 440 : baseWidth + hitSlop * 2
-        let targetHeight = expanded ? bodyHeight + 36 : bodyHeight + hitSlop
+        let targetWidth = expanded ? min(360, baseWidth + 120) : baseWidth + hitSlop * 2
+        let targetHeight = expanded ? bodyHeight + 28 : bodyHeight + hitSlop
         let target = NSRect(
             x: round(screen.frame.midX - targetWidth / 2),
             y: screen.frame.maxY - targetHeight,
@@ -277,9 +278,17 @@ private final class NotchHUDView: NSView {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, generation == self.transitionGeneration else { return }
-            self.syncMotion()
             completion?()
+            self.syncMotion()
         }
+    }
+
+    func prepareForWindowResize() {
+        transitionGeneration += 1
+        stopMotion()
+        shapeLayer.removeAnimation(forKey: "notchTransition")
+        auraLayer.removeAnimation(forKey: "notchTransition")
+        shimmerMask.removeAnimation(forKey: "notchTransition")
     }
 
     func stopMotion() {
@@ -301,8 +310,8 @@ private final class NotchHUDView: NSView {
         let contour = contourPath(expanded: expanded, amount: restingAmount)
         setModelPaths(shape: shape, contour: contour)
 
-        let band = NSRect(x: 0, y: 2, width: bounds.width, height: expanded ? 34 : 0)
-        let iconSize: CGFloat = 22
+        let band = NSRect(x: 0, y: 2, width: bounds.width, height: expanded ? 27 : 0)
+        let iconSize: CGFloat = 20
         let gap: CGFloat = label.stringValue.isEmpty ? 0 : 7
         let available = max(0, bounds.width - iconSize - gap - 28)
         let natural = label.stringValue.isEmpty ? 0 : ceil(
@@ -456,67 +465,96 @@ private final class NotchHUDView: NSView {
     /// Uses the same command topology for collapsed and expanded shapes so Core Animation can
     /// interpolate the contour without dropping a frame or flashing a rectangular backing layer.
     private func shapePath(expanded: Bool, amount: CGFloat) -> CGPath {
-        let width = expanded ? max(0, bounds.width - 4) : min(physicalNotchWidth, bounds.width)
-        let left = round(bounds.midX - width / 2)
-        let right = left + width
-        let top = bounds.maxY
+        let notchWidth = min(physicalNotchWidth, bounds.width)
+        let topLeft = round(bounds.midX - notchWidth / 2)
+        let topRight = topLeft + notchWidth
+        let bodyWidth = expanded ? max(notchWidth, bounds.width - 4) : notchWidth
+        let left = round(bounds.midX - bodyWidth / 2)
+        let right = left + bodyWidth
+        // Extend behind the screen edge to avoid an antialiased seam above the physical cutout.
+        let top = bounds.maxY + 2
         let base = expanded ? 2 : max(2, bounds.maxY - bodyHeight)
         let radius: CGFloat = expanded ? 16 : (hasPhysicalNotch ? 12 : 14)
+        let shoulder = expanded ? min(top - 4, bounds.maxY - bodyHeight + 8) : base + radius
         let center = (left + right) / 2
 
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: left, y: top))
-        path.addLine(to: CGPoint(x: right, y: top))
-        path.addLine(to: CGPoint(x: right, y: base + radius))
+        path.move(to: CGPoint(x: topLeft, y: top))
+        path.addLine(to: CGPoint(x: topRight, y: top))
+        path.addLine(to: CGPoint(x: topRight, y: shoulder))
+        path.addCurve(
+            to: CGPoint(x: right, y: base + radius),
+            control1: CGPoint(x: topRight, y: shoulder - 8),
+            control2: CGPoint(x: right, y: base + radius + 10)
+        )
         path.addQuadCurve(
             to: CGPoint(x: right - radius, y: base),
             control: CGPoint(x: right, y: base)
         )
         path.addCurve(
             to: CGPoint(x: center, y: base - amount),
-            control1: CGPoint(x: right - width * 0.22, y: base),
-            control2: CGPoint(x: center + width * 0.18, y: base - amount)
+            control1: CGPoint(x: right - bodyWidth * 0.22, y: base),
+            control2: CGPoint(x: center + bodyWidth * 0.18, y: base - amount)
         )
         path.addCurve(
             to: CGPoint(x: left + radius, y: base),
-            control1: CGPoint(x: center - width * 0.18, y: base - amount),
-            control2: CGPoint(x: left + width * 0.22, y: base)
+            control1: CGPoint(x: center - bodyWidth * 0.18, y: base - amount),
+            control2: CGPoint(x: left + bodyWidth * 0.22, y: base)
         )
         path.addQuadCurve(
             to: CGPoint(x: left, y: base + radius),
             control: CGPoint(x: left, y: base)
+        )
+        path.addCurve(
+            to: CGPoint(x: topLeft, y: shoulder),
+            control1: CGPoint(x: left, y: base + radius + 10),
+            control2: CGPoint(x: topLeft, y: shoulder - 8)
         )
         path.closeSubpath()
         return path
     }
 
     private func contourPath(expanded: Bool, amount: CGFloat) -> CGPath {
-        let width = expanded ? max(0, bounds.width - 4) : min(physicalNotchWidth, bounds.width)
-        let left = round(bounds.midX - width / 2)
-        let right = left + width
+        let notchWidth = min(physicalNotchWidth, bounds.width)
+        let topLeft = round(bounds.midX - notchWidth / 2)
+        let topRight = topLeft + notchWidth
+        let bodyWidth = expanded ? max(notchWidth, bounds.width - 4) : notchWidth
+        let left = round(bounds.midX - bodyWidth / 2)
+        let right = left + bodyWidth
         let base = expanded ? 2 : max(2, bounds.maxY - bodyHeight)
         let radius: CGFloat = expanded ? 16 : (hasPhysicalNotch ? 12 : 14)
+        let shoulder = expanded ? min(bounds.maxY - 2, bounds.maxY - bodyHeight + 8) : base + radius
         let center = (left + right) / 2
 
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: left, y: base + radius))
+        path.move(to: CGPoint(x: topLeft, y: shoulder))
+        path.addCurve(
+            to: CGPoint(x: left, y: base + radius),
+            control1: CGPoint(x: topLeft, y: shoulder - 8),
+            control2: CGPoint(x: left, y: base + radius + 10)
+        )
         path.addQuadCurve(
             to: CGPoint(x: left + radius, y: base),
             control: CGPoint(x: left, y: base)
         )
         path.addCurve(
             to: CGPoint(x: center, y: base - amount),
-            control1: CGPoint(x: left + width * 0.22, y: base),
-            control2: CGPoint(x: center - width * 0.18, y: base - amount)
+            control1: CGPoint(x: left + bodyWidth * 0.22, y: base),
+            control2: CGPoint(x: center - bodyWidth * 0.18, y: base - amount)
         )
         path.addCurve(
             to: CGPoint(x: right - radius, y: base),
-            control1: CGPoint(x: center + width * 0.18, y: base - amount),
-            control2: CGPoint(x: right - width * 0.22, y: base)
+            control1: CGPoint(x: center + bodyWidth * 0.18, y: base - amount),
+            control2: CGPoint(x: right - bodyWidth * 0.22, y: base)
         )
         path.addQuadCurve(
             to: CGPoint(x: right, y: base + radius),
             control: CGPoint(x: right, y: base)
+        )
+        path.addCurve(
+            to: CGPoint(x: topRight, y: shoulder),
+            control1: CGPoint(x: right, y: base + radius + 10),
+            control2: CGPoint(x: topRight, y: shoulder - 8)
         )
         return path
     }

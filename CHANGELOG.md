@@ -8,6 +8,7 @@
 - Reveal the animated Codex Cloud, current action, and timer only on hover, without a permanent rectangle.
 - Use an amber permission pulse, honor Reduce Motion, and open the complete sessions/MCP menu on click.
 - Keep motion on GPU-backed layers and resize the transparent panel only once per hover transition to avoid timer-driven stalls.
+- Anchor hover motion to the physical cutout, flare only the lower shoulders, and use a compact 340 pt reveal without a top seam.
 - Add a Codex Desktop demonstration to the README.
 - Document chat-title separation, MCP visibility, Codex Cloud motion, and color options.
 - Remove inherited Claude-specific contributor guidance and collapse the upstream changelog.
