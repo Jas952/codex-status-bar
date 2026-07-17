@@ -1,7 +1,7 @@
 {
   "name": "codex-status-bar",
-  "version": "0.2.0+codex.20260717094955",
-  "description": "Live Codex task, approval, tool, subagent, and MCP status in the macOS menu bar or camera notch.",
+  "version": "0.1.9+codex.20260716205822",
+  "description": "Live Codex session, approval, tool, subagent, and MCP status in the macOS menu bar.",
   "author": {
     "name": "Jas952",
     "url": "https://github.com/Jas952"
@@ -18,8 +18,8 @@
   ],
   "interface": {
     "displayName": "Codex Status Bar",
-    "shortDescription": "See live Codex activity in the menu bar or camera notch.",
-    "longDescription": "Installs local hooks that feed the Codex Status Bar app with task, approval, tool, subagent, and MCP activity for its menu bar and camera-notch modes.",
+    "shortDescription": "See live Codex activity from the menu bar.",
+    "longDescription": "Installs local hooks that feed the Codex Status Bar app with session, approval, tool, subagent, and MCP activity.",
     "developerName": "Jas952",
     "category": "Productivity",
     "capabilities": [
