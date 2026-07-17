@@ -47,9 +47,13 @@ The menu includes:
 ### Camera Notch mode
 
 On a MacBook with a camera cutout, Codex Status Bar can grow directly from the top-center notch.
-The black panel measures the real screen safe area instead of assuming a particular Mac model,
-keeps the animated Codex Cloud in the visible band below the camera, and smoothly expands for the
-current action and timer. Click the panel to open the same task, MCP, animation, and color menu.
+At rest it matches the physical cutout without a visible border or a second rectangle. While Codex
+works, only the lower edge breathes by a few pixels with a restrained blue-violet glow; permission
+requests use the same motion in amber. Hover over the edge to reveal the animated Codex Cloud,
+current action, and timer, then click it to open the same task, MCP, animation, and color menu.
+
+The shape measures the real macOS safe area instead of assuming a particular Mac model. It also
+respects **Reduce Motion**, replacing the repeating breath with a static, low-intensity status accent.
 
 On a display without a camera cutout, the mode falls back to a compact top-center capsule. Switch
 between both placements at any time under `Placement`.
