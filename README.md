@@ -38,10 +38,21 @@ spring motion, while the `>_` terminal mark remains faithful to the original log
 
 The menu includes:
 
+- **Placement:** the standard `Menu Bar` item or an interactive `Camera Notch` panel;
 - **Animation:** `Codex Cloud` or the compact `Terminal Pulse` alternative;
 - **Color:** the original blue-violet gradient or fixed `System White`;
 - **Show timer:** display or hide the elapsed turn time;
 - **Thinking words:** rotate lightweight working labels in the menu bar.
+
+### Camera Notch mode
+
+On a MacBook with a camera cutout, Codex Status Bar can grow directly from the top-center notch.
+The black panel measures the real screen safe area instead of assuming a particular Mac model,
+keeps the animated Codex Cloud in the visible band below the camera, and smoothly expands for the
+current action and timer. Click the panel to open the same task, MCP, animation, and color menu.
+
+On a display without a camera cutout, the mode falls back to a compact top-center capsule. Switch
+between both placements at any time under `Placement`.
 
 ## MCP servers
 

@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased — Documentation
+## 0.2.0 — Camera Notch
 
+- Add `Placement` choices for the standard menu bar and an interactive camera-notch HUD.
+- Measure the real macOS safe area and camera cutout, with a top-center capsule fallback on other displays.
+- Animate the panel geometry together with the existing Codex Cloud state and elapsed timer.
+- Open the complete sessions, MCP, animation, and color menu when the notch panel is clicked.
 - Add a Codex Desktop demonstration to the README.
 - Document chat-title separation, MCP visibility, Codex Cloud motion, and color options.
 - Remove inherited Claude-specific contributor guidance and collapse the upstream changelog.

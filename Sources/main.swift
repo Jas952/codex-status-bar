@@ -248,6 +248,7 @@ final class SessionRowView: NSView {
 
 final class StatusController: NSObject, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menu = NSMenu()
     let statusRoot = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/statusbar")
     lazy var stateDir = (statusRoot as NSString).appendingPathComponent("state.d")
     lazy var mcpStatePath = (statusRoot as NSString).appendingPathComponent("mcp.json")
@@ -333,6 +334,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     enum AnimStyle: String { case web, code, terminal, crab }
     enum IconPalette: String { case original, white, blue, system }
+    enum DisplayMode: String { case menuBar, notch }
     enum CloudMode { case idle, thinking, tool, permission }
     struct SpringChannel {
         var value: CGFloat = 0
@@ -350,6 +352,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
     var animStyle: AnimStyle = .code
+    var displayMode: DisplayMode = .menuBar
     var showTimer = false
     var iconPalette: IconPalette = .original
     var cloudMode: CloudMode = .idle
@@ -423,6 +426,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         case .crab: return max(1, crabFrames.count)
         }
     }
+    lazy var notchHUD = NotchHUDController { [weak self] event, view in
+        guard let self else { return }
+        NSMenu.popUpContextMenu(self.menu, with: event, for: view)
+    }
 
     override init() {
         super.init()
@@ -439,10 +446,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
-        let menu = NSMenu()
+        if let raw = d.string(forKey: "displayMode"), let mode = DisplayMode(rawValue: raw) { displayMode = mode }
         menu.delegate = self
         statusItem.menu = menu
         render(label: "", color: iconColor, animate: false, startedAt: 0)
+        applyDisplayMode(animated: false)
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
@@ -678,6 +686,17 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(header("Options"))
+        let placementParent = NSMenuItem(title: "Placement", action: nil, keyEquivalent: "")
+        let placementSub = NSMenu()
+        for (mode, name) in [(DisplayMode.menuBar, "Menu Bar"), (DisplayMode.notch, "Camera Notch")] {
+            let it = NSMenuItem(title: name, action: #selector(chooseDisplayMode(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = mode.rawValue
+            it.state = displayMode == mode ? .on : .off
+            placementSub.addItem(it)
+        }
+        placementParent.submenu = placementSub
+        menu.addItem(placementParent)
         menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
             self?.showTimer = on
             UserDefaults.standard.set(on, forKey: "showTimer")
@@ -993,6 +1012,23 @@ final class StatusController: NSObject, NSMenuDelegate {
         UserDefaults.standard.set(palette == .white || palette == .system,
                                   forKey: "iconSystem") // downgrade compatibility
         evaluate() // re-render the current state in the new color
+    }
+
+    @objc func chooseDisplayMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = DisplayMode(rawValue: raw) else { return }
+        displayMode = mode
+        UserDefaults.standard.set(raw, forKey: "displayMode")
+        DispatchQueue.main.async { [weak self] in self?.applyDisplayMode(animated: true) }
+    }
+
+    func applyDisplayMode(animated: Bool) {
+        statusItem.isVisible = displayMode == .menuBar
+        if displayMode == .notch {
+            updateNotchHUD(animated: false)
+            notchHUD.show(animated: animated)
+        } else {
+            notchHUD.hide(animated: animated)
+        }
     }
 
     @objc func chooseStyle(_ sender: NSMenuItem) {
@@ -1386,9 +1422,9 @@ final class StatusController: NSObject, NSMenuDelegate {
         activeBase = label
         activeColor = color
         self.startedAt = startedAt
+        cloudMode = newCloudMode
 
         if animStyle == .code {
-            cloudMode = newCloudMode
             let shouldMove = cloudMode != .idle || !cloudDynamicsSettled()
             if shouldMove {
                 if animTimer == nil {
@@ -1418,6 +1454,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             button.image = animStyle == .code ? cloudIcon(color: iconColor) :
                 (dot ? dotIcon(color: color) : restingIcon(color: color))
         }
+        updateNotchHUD()
     }
 
     func animStep() {
@@ -1428,10 +1465,12 @@ final class StatusController: NSObject, NSMenuDelegate {
             cloudClock += dt
             stepCloudDynamics(dt: dt)
             statusItem.button?.image = cloudIcon(color: iconColor)
+            updateNotchHUD(animated: false)
             if cloudMode == .idle && cloudDynamicsSettled() {
                 animTimer?.invalidate(); animTimer = nil
                 cloudActivity = SpringChannel(); cloudTool = SpringChannel(); cloudAttention = SpringChannel()
                 statusItem.button?.image = cloudIcon(color: iconColor)
+                updateNotchHUD(animated: false)
             }
             let titleSecond = Int(now)
             if titleSecond != cloudLastTitleSecond {
@@ -1443,6 +1482,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         frameIdx = (frameIdx + 1) % frameCount
         statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
         applyTitle() // refresh the elapsed clock
+        updateNotchHUD(animated: false)
     }
 
     func cloudTargets() -> (activity: CGFloat, tool: CGFloat, attention: CGFloat) {
@@ -1476,6 +1516,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if text.isEmpty {
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")
+            updateNotchHUD(text: text)
             return
         }
         button.imagePosition = .imageLeading
@@ -1486,6 +1527,28 @@ final class StatusController: NSObject, NSMenuDelegate {
             .font: NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular),
         ]
         button.attributedTitle = NSAttributedString(string: " \(text)", attributes: attrs)
+        updateNotchHUD(text: text)
+    }
+
+    func updateNotchHUD(text: String? = nil, animated: Bool = true) {
+        guard displayMode == .notch else { return }
+        let resolvedText: String
+        if let text {
+            resolvedText = text
+        } else {
+            var value = activeBase
+            if showTimer, startedAt > 0 {
+                value += "  " + elapsed(max(0, Int(Date().timeIntervalSince1970 - startedAt)))
+            }
+            resolvedText = value
+        }
+        let activity: NotchHUDController.Activity
+        switch cloudMode {
+        case .permission: activity = .permission
+        case .thinking, .tool: activity = .active
+        case .idle: activity = .idle
+        }
+        notchHUD.update(image: statusItem.button?.image, text: resolvedText, activity: activity, animated: animated)
     }
 
     // MARK: icon
