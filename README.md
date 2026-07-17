@@ -50,7 +50,8 @@ On a MacBook with a camera cutout, Codex Status Bar can grow directly from the t
 At rest it matches the physical cutout without a visible border or a second rectangle. While Codex
 works, the center of the lower edge breathes along a smooth curve while a restrained blue-violet
 highlight travels across that contour; permission requests use the same motion in amber. Hover over the edge to reveal the animated Codex Cloud,
-current action, and timer, then click it to open the same task, MCP, animation, and color menu.
+current action, and timer in a compact lower flare, then click it to open the same task, MCP,
+animation, and color menu. The top edge remains locked to the physical camera width throughout.
 
 The shape measures the real macOS safe area instead of assuming a particular Mac model. It also
 respects **Reduce Motion**, replacing the repeating breath with a static, low-intensity status accent.
