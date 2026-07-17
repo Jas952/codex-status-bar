@@ -4,8 +4,9 @@
 
 - Add `Placement` choices for the standard menu bar and an interactive camera-notch HUD.
 - Measure the real macOS safe area and camera cutout, with a top-center capsule fallback on other displays.
-- Animate the panel geometry together with the existing Codex Cloud state and elapsed timer.
-- Open the complete sessions, MCP, animation, and color menu when the notch panel is clicked.
+- Match the physical cutout at rest and communicate work through a subtle 2–6 px lower-edge breath.
+- Reveal the animated Codex Cloud, current action, and timer only on hover, without a permanent rectangle.
+- Use an amber permission pulse, honor Reduce Motion, and open the complete sessions/MCP menu on click.
 - Add a Codex Desktop demonstration to the README.
 - Document chat-title separation, MCP visibility, Codex Cloud motion, and color options.
 - Remove inherited Claude-specific contributor guidance and collapse the upstream changelog.
